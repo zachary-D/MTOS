@@ -1,0 +1,579 @@
+local version = "2.0.4a"
+
+if type(log) ~= "table" then
+	error("Log API required!")
+end
+
+log.setName("inventoryDrone")
+log.write("Beginning startup....")
+log.setMode("normal")
+
+if type(comms) ~= "table" then
+	log.write("comms API required!")
+	error("comms API required!")
+end
+
+if type(mv) ~= "table" then
+	log.write("mv API required!")
+	error("mv API required!")
+end
+
+local cruisingAlt = 67
+
+local storeroomXEntry = -61
+local storeroomZEntry = 262
+
+local roofCruise = 75
+local roofXEntry = -62
+local roofZEntry = 262
+
+local idle = false
+
+-- local autoCreateNewStorage = true
+
+-- os.loadAPI("MTOS/APIs/accurMove_api")
+-- _G.mv = accurMove_api
+mv.setNewMovementFunctions()
+mv.loadPos()
+
+log.mirrorPrint(true)
+
+-- stackAddresses = {}
+
+local controlServer = 23
+local inventoryServer = 59
+
+local controllers = {}
+controllers[25] = true
+controllers[controlServer] = true
+controllers[inventoryServer] = true
+
+local modemSide = "left"
+-- XML.encodeFile({["x"] = -66, ["y"] = 71, ["z"] = 261, ["dir"] = "north"}, "origin")
+local origin = XML.decodeFile("origin")
+
+--local systemState = "booting"
+
+comms.startup(modemSide)
+comms.setMode("normal")
+
+local status = "idle"
+local run = true
+local reboot = false
+
+function openDoor(door)
+	log.write("Opening door " .. door)
+	--comms.sendMessage(controlServer, "open:" .. door)
+end
+
+function closeDoor(door)
+	log.write("Closing door " .. door)
+	--comms.sendMessage(controlServer, "close:" .. door)
+end
+
+function moveX(x)
+	mv.moveX(x)
+end
+
+function moveY(y)
+	mv.moveY(y)
+end
+
+function moveZ(z)
+	mv.moveZ(z)
+end
+
+function moveXZ(x, z)
+	moveX(x)
+	moveZ(z)
+end
+
+function face(dir)
+	if dir == "north" or dir == "east" or dir == "south" or dir == "west" then
+		while mv.getDir() ~= dir do
+			turtle.turnRight()
+		end
+	else
+		error(dir .. " Is not a direction!")
+	end
+end
+
+function enterStoreroom()
+	log.write("Entering storeroom", true)
+	--sleep(2)
+	moveY(72)
+	moveXZ(storeroomXEntry, storeroomZEntry)
+	-- openDoor(4)
+	moveY(cruisingAlt)
+	-- closeDoor(4)
+	log.write("Done")
+end
+
+function exitStoreroom()
+	log.write("Exiting storeroom", true)
+	
+	moveYSpecial(cruisingAlt)
+	
+	moveXSpecial(storeroomXEntry-2)
+	moveZSpecial(storeroomZEntry)
+	mv.moveX(storeroomXEntry-2)
+	mv.moveZ(storeroomZEntry)
+	
+	-- openDoor(4)
+	moveY(72)
+	-- closeDoor(4)
+	-- moveXZ(-128, 275)
+	log.write("Done")
+end
+
+local roofCruise = 76
+local roofXEntry = -62
+local roofZEntry = 262
+
+
+function enterRoof()
+	log.write("Entering roof", true)
+	mv.moveY(73)
+	mv.moveX(roofXEntry)
+	mv.moveZ(roofZEntry)
+	mv.moveY(roofCruise)
+end
+
+function exitRoof()
+	log.write("Exiting roof", true)
+	mv.moveY(roofCruise)
+	moveXSpecial(roofXEntry)
+	moveZSpecial(roofZEntry)
+	mv.moveX(roofXEntry)
+	mv.moveZ(roofZEntry)
+	mv.moveY(73)
+end
+
+function moveXSpecial(x)
+	if x > mv.getX() then		--Moving east (+x)
+	
+		if math.abs(mv.getZ())%2 == 1 then
+			mv.moveZ(mv.getZ() + 1)
+		end
+		
+	elseif x < mv.getX() then	--Moving west (-x)
+		
+		if math.abs(mv.getZ())%2 == 0 then
+			mv.moveZ(mv.getZ() - 1)
+		end
+		
+	end
+	
+	mv.moveX(x)
+end
+
+function moveZSpecial(z)
+	
+	if z < mv.getZ() then		--If the drone is moving north, use an even X for movement
+				
+		if math.abs(mv.getX())%2 == 1 then
+			mv.moveX(mv.getX() + 1)
+		end
+		
+	elseif z > mv.getZ() then	--If the drone is moving south, use an odd X for movement
+		
+		if math.abs(mv.getX())%2 == 0 then
+			mv.moveX(mv.getX() - 1)
+		end
+		
+	end
+	
+	mv.moveZ(z)
+end
+
+function moveYSpecial(y)
+	
+	if math.abs(mv.getX())%2 == 0 then
+		mv.moveX(mv.getX() - 1)
+	end
+
+	mv.moveY(y)
+
+end
+
+function moveTo(x, y, z, facing, cruisingAlt)
+	log.write("Moving to " .. textutils.serialize(x) .. "|" .. textutils.serialize(y) .. "|" .. textutils.serialize(z))
+	
+	x = tonumber(x)
+	y = tonumber(y)
+	z = tonumber(z)
+	
+	if mv.getY() < 69 and 69 < y and y < 74 then	--If the turtle is in the storage room, and needs to move to the main room
+		exitStoreroom()
+	end
+	
+	if mv.getY() < 69 and y > 74 then			--If the turtle is in the storage room, and needs to move to the roof
+		exitStoreroom()
+		enterRoof()
+	end
+	
+	if 69 < mv.getY() and mv.getY() < 74 and y < 69 then	--If the turtle is in the main room, and needs to get to the storage room
+		enterStoreroom()
+	end
+	
+	if 69 < mv.getY() and mv.getY() < 74 and y > 74 then	--If the turtle is in the main room, and needs to get to the roof
+		enterRoof()
+	end
+	
+	if 74 < mv.getY() and 69 < y and y < 74 then	--If the turtle is on the roof, and needs to get to the main room
+		exitRoof()
+	end
+	
+	if 74 < mv.getY() and y < 69 then 	--If the turtle is on the roof, and needs to get to the storage room
+		exitRoof()
+		enterStoreroom()
+	end
+	
+	if (x ~= mv.getX() or z ~= mv.getZ()) then
+		if y <= cruisingAlt then	--Movement within the storage room
+			
+			moveYSpecial(cruisingAlt)
+			moveXSpecial(x)
+			moveZSpecial(z)
+			
+			mv.moveX(x)
+			mv.moveZ(z)
+		
+		elseif y > 74 then		--Movement on the roof
+			
+			mv.moveY(roofCruise)
+			moveXSpecial(x)
+			moveZSpecial(z)
+			mv.moveX(x)
+			mv.moveZ(z)
+			
+		elseif y > cruisingAlt then		--Movement outside the storage room
+			
+			mv.moveY(72)
+			mv.moveX(x)
+			mv.moveZ(z)
+			
+		end
+	end
+	
+	mv.moveY(y)
+	mv.face(facing)
+	
+	statusUpdate()
+	return packLocation(x, y, z, facing)
+end
+
+function packLocation(x, y, z, dir)		--Packs the cordinates x, y, z, dir into a table
+	return {["x"] = x, ["y"] = y, ["z"] = z, ["dir"] = dir}
+end
+
+function moveToIntake(intake)
+	log.write("moving to intake:" .. intake)
+	local message = {}
+	message.type = "request"
+	message.request = "intakeAddress"
+	message.intake = intake
+	comms.sendMessage(inventoryServer, message)
+	log.write("Requesting address " .. textutils.serialize(intake))
+	local dest = comms.waitForMessage(inventoryServer)
+	log.write("intake location for " .. textutils.serialize(intake) .. " sent as " .. textutils.serialize(dest.data))
+	moveTo(dest.data.x, dest.data.y, dest.data.z, dest.data.dir, cruisingAlt)
+	return dest.data
+end
+
+function moveToStack(stack)
+	local message = {}
+	message.type = "request"
+	message.request = "stackAddress"
+	message.item = stack
+	comms.sendMessage(inventoryServer, message)
+	log.write("Requesting address " .. textutils.serialize(stack))
+	local dest
+	repeat
+		dest = comms.waitForMessage(inventoryServer)
+		log.write(textutils.serialize(dest))
+	until dest ~= nil
+	log.write("Stack location for " .. textutils.serialize(stack) .. " sent as " .. textutils.serialize(dest.data))
+	return moveTo(dest.data.x, dest.data.y, dest.data.z, dest.data.dir, cruisingAlt)
+end
+
+function moveToOrigin()
+	print("Returning to origin")
+	moveTo(origin.x, origin.y, origin.z, origin.dir, cruisingAlt)
+end
+
+function isAtOrigin()
+	return mv.getX() == origin.x and mv.getY() == origin.y and mv.getZ() == origin.z and mv.getDir() == origin.dir
+end
+
+function pickUpAll()
+	turtle.select(1)
+	while turtle.suck() == true do end
+end
+
+function refuel()
+	turtle.select(1)
+	turtle.transferTo(16)
+	local item = {["name"] = "minecraft:coal", ["damageValue"] = 1}
+	while turtle.getFuelLevel() < 1500 do
+		retrieveItem(item, 10)
+		-- if retrieveItem(item, 10) ~= false then
+			-- comms.sendMessage(inventoryServer, {["type"] = "notification", ["notification"] = "itemPickup", ["item"] = item, ["amount"] = 1})
+		-- end
+		turtle.refuel(10)
+		print("ABCABC")
+	end
+	print("ABABAB")
+end
+
+function storeInventory()
+	log.write("Storing inventory")
+	local lastItem = ""
+	for slot = 1, 16 do
+		-- print("slot " .. slot)
+		turtle.select(slot)
+		local fallBackPoint = 1
+		while turtle.getItemCount(slot) > 0 do
+			statusUpdate()
+			local item = turtle.getItemDetail(slot)
+			item.fallBack = fallBackPoint
+			moveToStack(item)
+			local initialCount = item.count
+			turtle.drop()
+			local newItem = turtle.getItemDetail(slot)
+			local itemsDeposited
+			if newItem == nil then
+				itemsDeposited = item.count
+			else
+				local finalCount = newItem.count
+				itemsDeposited = initialCount - finalCount
+				comms.sendMessage(inventoryServer, {["type"] = "notification", ["notification"] = "chestFull", ["item"] = item})
+				fallBackPoint = fallBackPoint + 1
+			end
+			comms.sendMessage(inventoryServer, {["type"] = "notification", ["notification"] = "itemDeposit", ["item"] = item, ["amount"] = itemsDeposited})
+			-- mv.moveX(mv.getX() - 1)
+		end
+	end
+	turtle.select(1)
+	-- moveToOrigin()
+end
+
+function countItems(name)
+    local allItems = false
+    local total = 0
+    if name == nil then
+        allItems = true
+    end
+    for slot = 1, 16 do
+        local item = turtle.getItemDetail(slot)
+        if allItems == true or item.name == name then
+            total = total + turtle.getItemCount(slot)
+        end
+    end
+    return total
+end
+
+function setStatus(_status)
+	status = _status
+	statusUpdate()
+end
+
+function statusUpdate()
+	local message = {}
+	message.type = "statusUpdate"
+	message.status = status
+	message.pos = {["x"] = mv.getX(), ["y"] = mv.getY(), ["z"] = mv.getZ(), ["dir"] = mv.getDir()}
+	message.fuel = turtle.getFuelLevel()
+	comms.sendMessage(inventoryServer, message)
+	log.write("Server notified of status: " .. status)
+end
+
+function notification(message)
+	local data = {}
+	data.type = "notification"
+	if type(message) == "table" then
+		for k, v in pairs(message) do
+			data[k] = v
+		end
+	else
+		log.write("'message' should be a table!")
+		return nil
+	end
+	comms.sendMessage(inventoryServer, data)
+	log.write("Server notified!")
+end
+
+function notification_taskComplete(task)		--Notifies the server that task 'task' is complete.  Accepts a task UID or a task element
+	log.write(textutils.serialize(task))
+	local UID
+	local badInput = false
+	if type(task) == "number" then
+		UID = task
+	elseif type(task) == "table" then
+		if task.UID == nil then
+			badInput = true
+		else
+			UID = task.UID
+		end
+	else
+		badInput = true
+	end
+	
+	if badInput then
+		log.write("Unable to notify server of completed task - invalid value type for task - " .. textutils.serialize(task))
+	else
+		local message = {}
+		message.notification = "taskComplete"
+		message.taskUID = UID
+		log.write("Notifying server of task completion...")
+		notification(message)
+	end
+	-- setStatus("idle")
+end
+
+function retrieveItem(item, amount)		--item is a table containing the name and damageValue of the item.
+	local location
+	log.write("Retrieving " .. amount .. " of " .. textutils.serialize(item.name) .. "|" .. textutils.serialize(item.damageValue))
+	if item.damageValue == nil then
+		item.damageValue = 0
+	end
+	if item.name == nil or amount == nil then
+		log.write("We can't get an item if we don't know what it is or how much we need!")
+	else
+		location = moveToStack(item)
+		log.write("Point AA")
+		
+		local numCurrent = inv.getCountOf(item.name, item.damageValue)
+		local initialAmount = numCurrent
+		local numTarget = numCurrent + amount
+		
+		log.write("numTarget" .. numTarget)
+		
+		while numTarget > numCurrent and location ~= nil do
+			
+			local suckAmount
+			
+			if numTarget - numCurrent > 64 then
+				suckAmount = 64
+			else
+				suckAmount = numTarget - numCurrent
+			end
+
+			if turtle.suck(suckAmount) == false then
+				log.write("Notifing server of emtpy chest")
+				notification({["notification"] = "chestEmptied", ["chest"] = location})
+				location = nil
+			end
+			numCurrent = inv.getCountOf(item.name, item.damageValue)
+		end
+		
+		
+		
+		log.write("Point AB")
+		comms.sendMessage(inventoryServer, {["type"] = "notification", ["notification"] = "itemPickup", ["item"] = item, ["amount"] = numCurrent - initialAmount})
+		-- mv.moveX(mv.getX() - 1)
+	end
+	return location
+end
+
+log.write("Drone startup complete")
+log.write("Drone online")
+
+while run == true do
+	if turtle.getFuelLevel() < 1000 then
+		log.write("Refueling")
+		setStatus("refueling") 
+		refuel()
+		idle = false
+	end
+	if idle == false then
+		setStatus("idle")
+	end
+	log.write("Awaiting commands!")
+	-- log.write(textutils.serialize(msg))
+	msg = nil		--Just to be safe
+	local msg = comms.waitForMessage(inventoryServer)
+	idle = false
+	
+	-- log.write(textutils.serialize(msg))
+	if msg ~= nil then
+		msg = msg.data
+		print(textutils.serialize(msg))
+		if msg == "idle" then
+			if isAtOrigin() then
+				idle = true
+			else
+				moveToOrigin()
+			end
+		else
+			setStatus("Working")
+			if msg == "reset" then
+				run = false
+				reboot = true
+			elseif msg == "shutdown" then
+				run = false
+			elseif msg == "updateRequest" then
+				setStatus("idle")
+		
+			elseif msg == "exit" then
+				run = false
+			-- elseif msg == "storeMainRoom" then
+				-- enterMainRoom()
+				-- pickUpAll()
+				-- exitMainRoom()
+				-- storeInventory()
+			elseif type(msg) == "table" then
+				if msg.task == "store" then
+					log.write("storingB")
+					if msg.locType == nil then
+						log.write("Location type not specified, assuming coordinates")
+						msg.locType = "coords"
+					end
+					local location
+					if msg.locType == "intake" then
+						location = moveToIntake(msg.loc)
+					elseif msg.locType == "coords" then
+						location = moveTo(msg.loc.x, msg.loc.y, msg.loc.z, msg.loc.dir, cruisingAlt)
+					elseif msg.locType == "local" then
+						location = "local"
+					end
+					log.write(textutils.serialize(location))
+					if location ~= nil then
+						pickUpAll()
+						-- mv.moveY(87)
+						if type(location) == "table" then
+							log.write("Notifiying cS of empty chest")
+							notification({["notification"] = "chestEmptied", ["chest"] = location})
+						end
+						storeInventory()
+						notification_taskComplete(msg)
+					end
+				
+				elseif msg.task == "retrieve" then
+					log.write(textutils.serialize(msg))
+					log.write("Retrieving item")
+					retrieveItem(msg.item, msg.amount)
+					log.write("Point ABCDEF")
+					notification_taskComplete(msg)
+				end
+				
+			elseif string.sub(msg, 1, 4) == "get[" then
+				local targ = string.sub(msg, 5, string.find(msg, "]") - 1)
+				local num = tonumber(string.sub(msg, string.find(msg, "]") + 1, string.len(msg)))
+				retrieveItem({["name"] = targ}, num)
+				print("Point ABADAS")
+				moveToOrigin()
+			elseif msg == "getAddresses" then
+				comms.sendMessage(25, stackAddresses)
+			end
+		end
+	end
+end
+setStatus("offline")
+comms.shutdown()
+mv = nil
+if reboot then
+	os.reboot()
+else
+	os.shutdown()
+end

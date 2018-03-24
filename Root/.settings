@@ -1,0 +1,8 @@
+{
+  [ "list.show_hidden" ] = false,
+  [ "shell.allow_disk_startup" ] = false,
+  [ "edit.autocomplete" ] = true,
+  [ "shell.allow_startup" ] = true,
+  [ "shell.autocomplete" ] = true,
+  [ "lua.autocomplete" ] = true,
+}

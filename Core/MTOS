@@ -1,0 +1,142 @@
+-- local 
+_G.oldOS = {}	--A table containing functions from OS that MTOS overwrites
+
+local eventQueue = {}			--The event queue used by MTOS
+--[[ eventQueue table format
+eventQueue  -  an array of elements, from 1 to n.  1 is the most recent, 2 is the seocond most recent, etc.
+eventQueue[].event - event
+eventQueue[].arg1 - argument 1 (same for argument 2, 3, 4, and 5)
+
+]]--
+
+local noEventQueued = false		--True when the 'no event' event is queued
+
+
+local const = {}	--Constants
+const.eventPrefix = "_MTOSReserved_"	--The event prefix reserved by MTOS
+
+--Handles processing events from the OS event queue.  If waitForEvent is true, then even if no event is found, os.pullEvent will be called so MTOS will wait for one.
+function processOSQueue(waitForEvent)
+	
+	if noEventQueued then
+		oldOS.queueEvent(const.eventPrefix .. "noEvent")
+	end
+	
+	pullEventWrapper()
+	
+	local event, a1, a2, a3, a4, a5
+	
+	print(type(oldOS))
+	print(type(oldOS.pullEventRaw))
+	print(type(oldOS.pullEventRaw()))
+	print(oldOS.pullEventRaw())
+	 event = _G.oldOs.pullEventRaw()
+	 event, a1 = oldOs.pullEventRaw()
+	 event, a1, a2 = oldOs.pullEventRaw()
+	 event, a1, a2, a3 = oldOs.pullEventRaw()
+	 event, a1, a2, a3, a4 = oldOs.pullEventRaw()
+	 event, a1, a2, a3, a4, a5 = oldOs.pullEventRaw()
+	local eventFound = false	
+	
+	if event == const.eventPrefix .. "noEvent" then
+		noEventQueued = false
+		
+		if waitForEvent then
+			event, a1, a2, a3, a4, a5 = oldOs.pullEventRaw()
+			eventFound = true
+		end
+	
+	else
+		eventFound = true
+	end
+	
+	if eventFound then
+		local eventTable = {}
+		eventTable.event = event
+		eventTable.arg1 = a1
+		eventTable.arg2 = a2
+		eventTable.arg3 = a3
+		eventTable.arg4 = a4
+		eventTable.arg5 = a5
+		
+		table.insert(eventQueue, eventTable)
+	end
+	
+end
+
+--Debug test function - remove
+function pullEventWrapper()
+
+	oldOS.pullEventRaw()
+
+end
+
+--The MTOS version of os.pullEvent()
+function pullEvent(targetEvent)
+	print("OS pullEvent() call redirected")
+	processOSQueue()
+	local cEvent = {}
+	
+	--Keep pulling events off the queue until it is not a terminate event, and it matches targetEvent (if it is not NIL)
+	while cEvent.event ~= nil and cEvent.event ~= "terminate" and (targetEvent == nil or cEvent.event == targetEvent) do
+		if #eventQueue == 0 then
+			processOSQueue(true)
+		end
+		cEvent = eventQueue[1] --cEvent is short for currentEvent
+		table.remove(eventQueue, 1)
+	end
+	
+	return cEvent.event, cEvent.arg1, cEvent.arg2, cEvent.arg3, cEvent.arg4, cEvent.arg5
+end
+
+--The MTOS version of os.pullEventRaw()
+function pullEventRaw(targetEvent)
+	processOSQueue(true)
+	local cEvent = {}
+	
+	--Keep pulling events off the queue until it matches the targetEvent (if the target event was specified)
+	while cEvent.event ~= nil and (targetEvent == nil or cEvent.event == targetEvent) do
+		if #eventQueue == 0 then
+			processOSQueue(true)
+		end
+		cEvent = eventQueue[1] --cEvent is short for currentEvent
+		table.remove(eventQueue, 1)
+	end
+	return cEvent.event, cEvent.arg1, cEvent.arg2, cEvent.arg3, cEvent.arg4, cEvent.arg5
+end
+
+function queueEvent(event, a1, a2, a3, a4, a5)
+	
+	if event:sub(1, const.eventPrefix:len()) == const.eventPrefix then
+		error("The " .. const.eventPrevix .. "event prefix is reserved for use by MTOS only!")
+	end
+	
+	oldOS.queueEvent(event, a1, a2, a3, a4, a5)
+end
+
+--Debug.  Preforms the first part of boot
+function boot_pre()
+
+	oldOS.pullEvent = os.pullEvent
+	oldOS.pullEventRaw = os.pullEventRaw
+	oldOS.queueEvent = os.queueEvent
+
+end
+
+function boot()	--Preforms core functions to boot the system - replaces OS event functions, etc.
+	--Store the original OS functions in local addresses
+	oldOS.pullEvent = os.pullEvent
+	oldOS.pullEventRaw = os.pullEventRaw
+	oldOS.queueEvent = os.queueEvent
+	
+	--Replace the public functions with our own
+	os.pullEvent = MTOS.pullEvent
+	os.pullEventRaw = MTOS.pullEventRaw
+	os.queueEvent = MTOS.queueEvent
+end
+
+-- function shutdown()	--Undoes boot.  Returns overridden functions to their original state, etc.
+	-- os.pullEvent = oldOS.pullEvent
+	-- os.pullEventRaw = oldOS.pulLEventRaw
+	-- os.queueEvent = oldOS.queueEvent
+-- end

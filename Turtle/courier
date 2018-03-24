@@ -1,0 +1,143 @@
+local version = "1.0.1"
+
+local run = true
+
+local cruiseAlt = 80
+
+local pickup = {}
+local path = {}
+local dropoff = mv.packLocation(-63, 76, 260, "east")
+
+local args = {...}
+
+local run = true
+
+function pickup_newLocation(location)
+	table.insert(pickup, location)
+end
+
+function path_newLocation(location)
+	table.insert(path, location)
+end
+
+function refuel()
+	if turtle.getFuelLevel() < 1000 then
+		mv.moveY(cruiseAlt)
+		mv.move(dropoff)
+		turtle.up()
+		print("Need fuel!")
+		read()
+		shell.run("refuel 64")
+	end
+end
+
+function notifyServer()
+	local message = {}
+	message.type = "command"
+	message.command = "store"
+	message.locType = "intake"
+	message.loc = "roof intake 1"
+	message.priority = 9
+	comms.sendMessage(59, message)
+end
+
+function mineChest()
+	turtle.digDown()
+	turtle.down()
+	
+	for i = 1, 4 do 
+		
+		local success, data = turtle.inspect()
+		
+		if success and data.name == "minecraft:chest" then
+			turtle.dig()
+		end
+		turtle.turnLeft()
+	end
+end
+
+comms.startup("left")
+
+pickup = XML.decodeFile("pickups")
+path = XML.decodeFile("path")
+
+if #args > 0 then
+
+	if args[1] == "newLoc" then
+		pickup_newLocation(mv.getPos())
+		XML.encodeFile(pickup, "pickups")
+		print("Location logged")
+		
+	elseif args[1] == "delPath" then
+		path = {}
+		XML.encodeFile(path, "path")
+		print("Path reset")
+		
+	elseif args[1] == "newPathNode" then
+		path_newLocation(mv.getPos())
+		XML.encodeFile(path, "path")
+		print("New node saved")
+		
+	elseif args[1] == "serverTest" then
+		print("Sending test message")
+		notifyServer()
+		
+	elseif args[1] == "mineTest" then
+		print("Beginning test...")
+		mineChest()
+		
+	end
+
+	run = false
+	
+end
+
+if run then
+
+	while #pickup > 0 do
+
+		refuel()
+		
+		-- mv.moveY(cruiseAlt)
+		if #path > 0 then
+			for i = 1, #path do
+				mv.moveY(path[i].y)
+				mv.move(path[i])
+			end
+		end
+		mv.move(pickup[1])
+		
+		while turtle.suckDown() == true do end
+		
+		if inv.isInventoryFull() == false then
+			table.remove(pickup, 1)
+			print("Emptied a chest!")
+			mineChest()
+			XML.encodeFile(pickup, "pickups")
+		end
+		
+		if #path > 0 then
+			for i = #path, 1, -1 do
+				mv.moveY(path[i].y)
+				mv.move(path[i])
+			end
+		end
+		
+		-- mv.moveY(cruiseAlt)
+		mv.move(dropoff)
+		
+		notifyServer()
+		for i = 1, 16 do
+			turtle.select(i)
+			turtle.dropDown()
+		end
+		
+		--Tell the inventory server to come grab it
+		
+	end
+
+	-- mv.moveY(cruiseAlt)
+	-- mv.move(dropoff)
+	-- turtle.up()]
+	log.write("Out of pickups!", true)
+end

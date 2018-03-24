@@ -1,0 +1,45 @@
+local version = "1.2.2"
+
+print("Installing APIs")
+if fs.isDir("disk") == true and fs.isDir("disk/MTOS") == true then
+	if fs.exists("inp") == true then
+		fs.delete("inp")
+	end
+	fs.copy("disk/MTOS/inp", "inp");
+
+	print("Mounting APIs")
+	os.loadAPI("inp")
+	
+	print("Installing GPS server")
+	print("Attepting to auto-locate server")
+	local manual = false
+	local x, y, z
+	
+	repeat 
+		x, y, z = gps.locate()
+		if x == nil then
+			repeat
+				print("\nUnable to determine location automatically, enter manually?")
+				write("Y/N?>")
+				local inp = read()
+				if string.lower(inp) == "y" then
+					x = inp_API.getNumInp("x: ")
+					y = inp_API.getNumInp("y: ")
+					z = inp_API.getNumInp("z: ")
+				end
+			until string.lower(inp) ~= "y" or string.lower(inp) ~= "n"
+		end
+	until x ~= nil and y ~= nil and z ~= nil
+	if fs.exists("startup") == true then
+		fs.move("startup", "startup_old")
+		print("Old startup file found, renamed to startup_old")
+	end
+	local file = fs.open("startup", "w")
+	file.writeLine("shell.run(\"gps host " .. x .. " " .. y .. " " .. z .. "\")")
+	file.close()
+	shell.run("label set TCo_GPS_HOST-" .. x .. "-" .. y .. "-" .. z)
+	sleep(2.5)
+	os.reboot()
+else
+	print("Error: installation disk not present")
+end 

@@ -1,0 +1,33 @@
+local version = "1.2.2"
+
+os.loadAPI("inp")
+
+local slot = 1
+turtle.select(1)
+getFullSlot = function()
+	while turtle.getItemCount(slot) == 0 do
+		if slot >= 16 then
+			turtle.select(1)
+			slot = 1
+		else
+			turtle.select(slot + 1)
+			slot = slot + 1
+		end
+	end
+end
+local target = inp.getNumInp("Height:")
+
+for x = 1, target do
+  getFullSlot()
+  turtle.place()
+
+  turtle.up()
+
+end
+
+
+for x = 1, target do
+
+  turtle.down()
+
+end

@@ -1,0 +1,105 @@
+local version = "v1.0.1"
+
+local lastRequeue
+
+function resetRequeueTimer()		--Resets the timer used in requeueEvents()
+	lastRequeue = os.clock()
+end
+
+function requeueEvents()			--Requeues all events in their original order (IF A NEW EVENT IS FIRED AS THE EVENTS ARE REQUEUED IT WILL DISRUPT THE PROPER ORDER).  Used to make sure the program doesn't time out during time-consuming tasks
+	if lastRequeue == nil then
+		lastRequeue = os.clock() - 15
+	end
+	if os.clock() - lastRequeue > 5 then
+		local events = {}
+		local event
+		os.queueEvent("lastEvent")
+		while event ~= "lastEvent" do
+			local arg1, arg2, arg3, arg4, arg5
+			event, arg1, arg2, arg3, arg4, arg5 = os.pullEventRaw()
+			table.insert(events, {["event"] = event, ["arg1"] = arg1, ["arg2"] = arg2, ["arg3"] = arg3, ["arg4"] = arg4, ["arg5"] = arg5})
+			end
+		for i = 1, #events do
+			local event, arg1, arg2, arg3, arg4, arg5
+			event = events[i].event
+			arg1 = events[i].arg1
+			arg2 = events[i].arg2
+			arg3 = events[i].arg3
+			arg4 = events[i].arg4
+			arg5 = events[i].arg5
+			if event ~= "lastEvent" then
+				if arg5 ~= nil then
+					os.queueEvent(event, arg1, arg2, arg3, arg4, arg5)
+				elseif arg4 ~= nil then
+					os.queueEvent(event, arg1, arg2, arg3, arg4)
+				elseif arg3 ~= nil then
+					os.queueEvent(event, arg1, arg2, arg3)
+				elseif arg2 ~= nil then
+					os.queueEvent(event, arg1, arg2)
+				elseif arg1 ~= nil then
+					os.queueEvent(event, arg1)
+				elseif event ~= nil then
+					os.queueEvent(event)
+				end
+			end
+		end
+	end	
+	resetRequeueTimer()
+end
+
+function getStrBetweenText(text, start, stop)	--Returns the section of the string 'text' between 'start' and 'stop'.  Additionally returns the section of 'text' after 'stop'
+	local mid = text:sub(text:find(start) + 1, text:find(stop) - 1)
+	local after = text:sub(text:find(stop) + 1, text:len() +1)
+	--local mid = string.sub(text, string.find(text, start)+1, string.find(text, stop)-1)
+	--local after = string.sub(text, string.find(text, stop)+1, string.len(text)+1)
+	
+	return mid, after
+end
+
+function stringToTable(str)	--Separates a string into a table index by number, where each element is a character in the string
+	local tab = {}
+	
+	str:gsub(".",function(c) table.insert(tab,c) end)
+	
+	return tab
+end
+
+function isTable(var)
+	return type(var) == "table"
+end
+
+function isNum(var)
+	return type(var) == "number"
+end
+
+function isString(var)
+	return type(var) == "string"
+end
+
+function hasFileExtension(fileName)
+	
+	--If the filename has a period in it
+	local perPos = fileName:find('%.')	--The position(s) where periods are found
+	
+	if perPos == nil then
+		--If there is no period in the fileName, it can't have an extension
+		return false
+	else
+		--If perPos is a table, set perPos to the last element
+		if type(perPos) == "table" then
+			perPos = perPos[#perPos]
+		end
+		
+		--Extract the file extension
+		local extension = fileName:sub(perPos, fileName:len())
+		
+		if extension:find(' ') then
+			--If there is a space in the extension, it isn't a valid extension
+			return false
+		else
+			--Otherwise, it is an extension
+			return true
+		end
+	end
+	
+end

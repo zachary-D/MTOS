@@ -1,0 +1,120 @@
+local version = "v1.4.0a"
+
+local logPos = "MTOSLocal/Logs"
+local defaultLogName = "log"
+local logName = {"log"}
+local fileExtension = "log"
+
+local mirrorToDisplay = false
+
+local file
+local mode = "normal"
+local debugMode = false
+
+function getLogPath()		--Returns the path to the log file
+	return logPos .. "/" .. logName[#logName] .. "." .. fileExtension
+end
+
+function mirrorPrint(state)		--Specifies whether or not the data written to the log should be written to the console.  Overridden by the 'mirrorPrint' argument in log.write()
+	if state == true or state == false then
+		mirrorToDisplay = state
+	end
+end
+
+function getMirrorPrint()
+	return mirrorToDisplay
+end
+
+function setName(name)		--Sets the name of the log
+	if name == nil then
+		name = defaultLogName
+	end
+	table.insert(logName, name)
+end
+
+function setLogName(name)		--Just an alais for backwards compatability
+	setName(name)
+end
+
+function setMode(_mode)
+	if _mode == nil then
+		_mode = "debug"
+	end
+	if _mode == "normal" or _mode == "debug" then
+		mode = _mode
+	end
+end
+
+function restoreName()		--Reverts the log name to the last name used
+	table.remove(logName)
+end
+
+function write(message, mirrorPrint)		--Writes 'message' to the log
+   --Input validation and checking
+   if message == nil then
+     message = "nil"
+   end
+   if mirrorPrint == nil then
+		mirrorPrint = mirrorToDisplay
+   end
+   
+	local log = nil
+	if fs.isDir(logPos) == false then
+		fs.makeDir(logPos)
+	end
+	if fs.exists(getLogPath()) == false then
+		file = fs.open(getLogPath(), "w")
+		file.writeLine(os.day() .. "|" .. textutils.formatTime(os.time(), false) .. " : " .. "log created")
+	else
+		local logWiped = false
+		if mode == "normal" then
+			file = fs.open(getLogPath(), "a")
+		else
+			if file == nil then
+				file = fs.open(getLogPath(), "a")
+			end
+		end
+		if fs.getSize(getLogPath()) > 50000 then
+			file.flush()
+			file.close()
+			fs.delete(getLogPath())
+			logWiped = true
+			file = fs.open(getLogPath(), "w")
+		end
+		if logWiped then
+			file.writeLine(os.day() .. "|" .. textutils.formatTime(os.time(), false) .. " : " .. "log erased due to size")
+		end
+	end
+	-- log.write("LOG OVVERIDDEN TO DISABLED")
+	file.writeLine(os.day() .. "|" .. textutils.formatTime(os.time(), false) .. " : " .. textutils.serialize(message))
+	if mirrorPrint == true then
+		print(message)
+	end
+	if mode == "normal" then
+		file.flush()
+		file.close()
+	end
+ end
+ 
+function debugWrite(message, mirrorPrint)
+	if mode == "debug" then
+		write(message, mirrorPrint)
+	end
+end
+
+ function flush()
+	if file ~= nil then
+		file.flush()
+	end
+ end
+ 
+ function install()					--Intstalls the log (basically just creates the folder)
+	if fs.isDir(logPos) == false then
+		fs.makeDir(logPos)
+	end
+	if fs.exists(getLogPath()) == false then
+		local log = fs.open(getLogPath(), "w")
+		log.close()
+		write("Installed log_api")
+	end
+ end

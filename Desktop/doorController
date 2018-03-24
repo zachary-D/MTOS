@@ -1,0 +1,93 @@
+local version = "2.0.0a"
+
+local run = true
+
+local modemSide = XML.decodeFile("modemSide")
+
+local doorsClosed = XML.decodeFile("doorsClosed")
+local lockdown = XML.decodeFile("lockdown")
+
+local pistonSides = XML.decodeFile("pistonSides")
+local doorSides = XML.decodeFile("doorSides")
+
+local pistonClosedSignal = XML.decodeFile("pistonClosedSignal")
+
+local controlServer = XML.decodeFile("controlServer")
+
+-- local modem = peripheral.wrap(modemSide)
+
+function saveState()
+	XML.encodeFile(doorsClosed, "doorsClosed")
+	XML.encodeFile(lockdown, "lockdown")
+end
+
+function setDoors()
+	for k, v in pairs(pistonSides) do
+		if doorsClosed then
+			redstone.setOutput(v, pistonClosedSignal)
+		else
+			redstone.setOutput(v, not pistonClosedSignal)
+		end
+	end
+	for k, v in pairs(doorSides) do
+		redstone.setOutput(v, not doorsClosed)
+	end
+	saveState()
+	comms.sendMessage(23, "stateReport:" .. getState())
+end
+
+function getState()
+	local state = ""
+	if doorsClosed then
+		state = "closed"
+	elseif doorsClosed == false then
+		state = "open"
+	else
+		state = "closed"
+		doorsClosed = true
+		setDoors()
+	end
+	return state
+end
+
+comms.startup(modemSide)
+log.setLogName("doorController")
+setDoors()
+
+while run == true do
+	message = comms.waitForMessage(controlServer)
+	if message.data == "toggleState" then
+		if doorsClosed == true then
+			doorsClosed = false
+		else
+			doorsClosed = true
+		end
+	elseif message.data == "open" then
+		doorsClosed = false
+	elseif message.data == "close" then
+		doorsClosed = true
+	elseif message.data == "getState" then
+		comms.sendMessage(message.sender, "stateReport:" .. getState())
+	elseif message.data == "lockdown" then
+		doorsClosed = true
+		lockdown = true
+		setDoors()
+	else
+		print("Bad message: " .. message.data)
+	end
+	setDoors()
+end
+
+comms.shutdown()
+
+XML.encodeFile(modemSide, "modemSide")
+
+XML.encodeFile(doorsClosed, "doorsClosed")
+XML.encodeFile(lockdown, "lockdown")
+
+XML.encodeFile(pistonSides, "pistonSides")
+XML.encodeFile(doorSides, "doorSides")
+
+XML.encodeFile(pistonClosedSignal, "pistonClosedSignal")
+
+XML.encodeFile(controlServer, "controlServer")

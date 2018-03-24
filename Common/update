@@ -1,0 +1,19 @@
+local version = "v1.0.0"
+
+shell.run("cd /")
+
+if fs.exists("disk/MTOS/MTOSInstaller") then
+	shell.run("MTOS/uninstall override")
+	
+	local installType = ""
+	local readInstallType = fs.open("MTOSLocal/.installType", 'r')	--The file containing the install type
+	if readInstallType ~= nil then
+		installType = readInstallType.readLine()
+	end
+	readInstallType.close()
+	
+	
+	shell.run("disk/MTOS/MTOSInstaller " .. installType)
+else
+	print("Installation disk not present.")
+end

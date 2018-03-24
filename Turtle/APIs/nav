@@ -1,0 +1,99 @@
+local version = "v1.0.0a"
+
+local map = {}
+
+local fileLoc = "nav/map"
+local mapServer = 24	--Make sure this is right
+
+local outdoorCruisingAlt_pos = 100		--The cruising alt a turtle will use when moving in a positive X or Z direction
+local outdoorCruisingAlt_neg = 101		--The cruising alt a turtle will use when moving in a negative X or Z direction
+
+function startup()
+	map = XML.decodeFile(fileLoc)
+end
+
+function saveMap()
+	XML.encodeFile(map, fileLoc)
+end
+
+function updateMap()
+	comms.sendMessage(mapServer, "mapUpdateRequest")
+	--Come up with a better way to get the message without halting the whole 
+	message = comms.waitForMessage(mapServer)
+	local failed = false
+	if type(message.data) == "table" then
+		if message.data.content == "map" then
+			map = message.data.map
+		else
+			log.write("Bad message recieved when trying to update map:\n" .. textutils.serialize(message.data))
+			failed = true
+		end
+	else
+		log.write("Bad datatype recieved from map server:" .. textutils.serialize(message.data))
+		failed = true
+	end
+	if failed then
+		log.write("Retrying map update")
+		updateMap()
+	end
+end
+
+function isBetween(val, min, max)
+	return min <= val and val <= max
+end
+
+function isWithin(x, y, z, xMin, xMax, yMin, yMax, zMin, zMax)
+	return isBetween(x, xMin, xMax) and isBetween(y, yMin, yMax) and isBetween(z, zMin, zMax)
+end
+
+function isInRoom(x, y, z, roomID)
+	for i = 1, #rooms[roomID].area do
+		local room = rooms[roomID].area[i]
+		if isBetween(x, room.xMin, room.xMax) and isBetween(y, room.yMin, room.yMax) and isBetween(z, room.zMin, room.zMax) then
+			return true, roomID, i
+		end
+	end
+end
+
+function getRoom(x, y, z)							--Returns the roomID and sectionID that x, y, z is located in.  Also accepts x, y, and z packed into a table passed to x.
+	if type(x) == "table" and y == nil then
+		y = x.y
+		z = x.z
+		x = x.x
+	end
+	for i = 1, #rooms do
+		local res, roomID, secID = isInRoom(x, y, z, i)
+		if res then
+			return roomID, secID
+		end
+	end
+end
+
+function moveTo(x, y, z, dir)					--Moves the turtule to x, y, z, and ensures it's facing dir (dir is optional)
+	local srcRoomUID, srcSecID = getRoom(mv.getPos())
+	local destRoomUID, destSecID = getRoom(x, y, z)
+	if srcRoomUID == nil and destRoomUID == nil then
+		--If the turtle is going from one outdoor area to another
+		_move_outsideMode(x, y, z, dir)
+	end
+end
+
+function _move_outsideMode(x, y, z, dir)			--Moves to x, y, z, dir, using the method used for movement outdoors, outside of mapped rooms
+	if mv.getX() > x then
+		mv.moveY(outdoorCruisingAlt_pos)
+	elseif mv.getX() < x then
+		mv.moveY(outdoorCruisingAlt_neg)
+	end
+	mv.moveX(x)
+	if mv.getZ() > z then
+		mv.moveY(outdoorCruisingAlt_pos)
+	elseif mv.getZ() < z then
+		mv.moveY(outdoorCruisingAlt_neg)
+	end
+	mv.moveZ(z)
+	mv.moveY(y)
+	if dir ~= nil then
+		mv.face(dir)
+	end
+end
+

@@ -1,0 +1,691 @@
+local _PROGRAM_VERSION = "1.0.0a"
+
+--[[Todo:
+
+	Misc ideas:
+	--> Create a function library to manage file operations, i.e. getPathToArchive(), getPathToMeta(), etc...
+	
+	I)	Finish version control segment
+			a)	Add stability tags (alpha, beta, stable) [done]
+			b)	Add method to deploy archived version [done]
+			c)	Potentially make the version control code more object-oriented?  (insdead of calling functions like this (version, operation) the version would be set when the 'object' is created, and functions would work as memeber functions
+	II)	Write network functions 
+			a)	Commands:
+				1)	Archive code as version [done]
+					I)	If version is not specified, assume last version + (0, 0, 1) [done]
+				2)	Assign meta tags to version [done]
+				3)	Deploy version
+					I)	Add warning if the user attempts to deploy code not marked 'stable'
+				4)	Propmt clients to update
+				5) Get list of archives
+					I) Metadata is automatically packaged with this one
+				6) Get metadata for archive 
+			b)	Requests:
+				1)	Current Deployed Version
+				2)	Current Dev Version
+	III)Write update-deployment system
+			a)	Add aa ability to request updates as 'devkits' - to test the code
+			b)	Add a method to prompt all clients to update (to deploy updates)
+		
+]]--
+
+
+--Constants
+
+local const = {}	--General-use constant table
+
+local storageDir_short = "SCServer/"				--storageDir, without the MTOSLocal/ prefix (the XML and similar APIs auto-append MTOSLocal
+local storageDir = "MTOSLocal/" .. storageDir_short	--The file path to a directory that all other paths will be inside of
+
+local modemSide = "right"
+
+--Constants - Version Control
+local dir_dev = "dev/"					--The folder containing the code that is currently being written/edited
+local dir_archive = "archive/"			--The folder containing saved versions of code
+local dir_data = "files/"				--The folder WITHIN EACH ARCHIVE that contains the files
+local file_meta = "meta.XML"			--The file WITHIN EACH ARCHIVE that contains metadata, such as stability tags
+local file_deployVer = "deploy.XML"		--The file (within the storage dir) which stores the currently deployed archive version
+local deployedVersion = {[1] = -1, [2] = -1, [3] = -1}	--The current version of code that is deployed (used to index a version in dir_archive)
+
+--Constants - Networking
+
+local dir_network = "net/"
+local file_commanders = "commanders.XML"
+
+--Constants - Communication
+
+local protocol = {}
+
+protocol.type = {}								--Message type indicatiors
+protocol.type.command = "command"				--Message type: command
+protocol.type.reply = "reply"					--Message type: reply
+
+protocol.commands = {}							--Command type indicators
+protocol.commands.newArchive = "createArchive"	--Command: create archive
+protocol.commands.setMeta = "setMeta"			--Command: set metadata.  (version table should accompany this in .version, metadata flag should accompany this in .metaFlag, metadata value should accompany this in .metaValue)
+
+protocol.replies = {}							--Reply type indicators
+		--Error replies
+protocol.replies.invalidVersion = "invalidVer"	--Reply: Invalid version
+protocol.replies.badVersion = "badVersion"		--Reply: Bad version (version values are invalid (nil, missing, etc.)
+protocol.replies.versionDNE = "versionDNE"		--Reply: Version does not exist
+protocol.replies.badMetaFlag = "badMeta"		--Reply: Metedata flag is invalid (nil, missing, etc)
+		--Success replies
+protocol.replies.archiveCreated = "versionCreated" --Reply: Version created (accompanied by a version table)
+protocol.replies.metaSet = "metaSet"			--Reply: Metadata values set (Optionally accompanied by .metaFlag (metadata flag) and .metaValue (metadata value)
+
+
+--Functions
+
+local startup = {}	--The startup functions
+local util = {}		--Utility functions
+local version = {}	--Functions for comparing version values
+local archive = {}	--Archive functions
+local network = {}	--Functions for keeping track of PC's being talked to
+
+function startup.startup()					--Preforms functions required to start the server
+	log.setName("sourceControlServer")
+	log.setMode("normal")
+	log.debugWrite("Function: startup()")
+	log.write("Checking file structure.", true)
+	startup.checkFileStructure()
+	
+	log.write("Loading deployed version", true)
+	archive.loadDeployedVersion()
+	
+	log.write("Starting comms API", true)
+	comms.startup(modemSide)
+	
+	inp.acceptInput(false)
+	
+	log.write("Loading network settings.", true)
+	network.startup()
+	
+	log.write("Loading communication protocol.", true)
+	if not fs.exists("MTOS/Protocols/sourceControlServer.protocol") then
+		log.write("ERROR: Communication protocol not found!", true)
+		-- error("Communication protocol not found!")
+	end
+	-- protocol = XML.decodeFile("MTOS/Protocols/sourceControlServer.protocol")
+	
+	log.write("Startup complete.", true)
+	log.write("sourceControlServer v" .. _PROGRAM_VERSION .. " started.", true )
+end
+
+function startup.checkFileStructure()	--Makes sure all required folders exist
+	log.debugWrite("Function: startup.checkFileStructure()")
+	
+	if fs.exists(storageDir) == false then
+		log.write("Warning: Storage directory missing.  Creating storage directory.", true)
+		fs.makeDir(storageDir)
+	end
+	
+	--Checking code archive file structure
+	
+	if fs.exists(storageDir .. file_deployVer) == false then
+		log.write("Warning: Deployed version file missing.  Defaulting to {-1, -1, -1} (no version).", true)
+		archive.saveDeployedVersion()
+	end
+	
+	if fs.exists(storageDir .. dir_archive) == false then
+		log.write("Warning: Archive directory missing.  Creating archive directory.", true)
+		fs.makeDir(storageDir .. dir_archive)
+	end
+	
+	if fs.exists(storageDir .. dir_dev) == false then
+		log.write("Warning: Dev directory missing.  Creating dev directory.", true)
+		fs.makeDir(storageDir .. dir_dev)
+	end
+	
+	--Check archived versions for proper format
+	local archives = fs.list(storageDir .. dir_archive)
+	for i = 1, #archives do
+		local current = archives[i]
+		
+		local contents = fs.list(storageDir .. dir_archive .. current .. "/")
+		
+		local metaFound = false	--If the metadata file was found
+		local dataFound = false	--If the data (code) directory was found
+		local unknownFound = false	--If unexpected directories/files were found
+		
+		--Loop over 'contents' checking each directory
+		for x = 1, #contents do
+			local item = contents[x]
+			
+			if item .. "/" == dir_data then
+				dataFound = true
+			elseif item == file_meta then
+				metaFound = true
+			else
+				unknownFound = true
+			end
+		end
+		
+		if not dataFound then
+			log.write("Warning: The data for \"" .. current .. "\" can not be found!", true)
+			log.write("The archive may be corrupt!", true)
+		end
+		
+		if not metaFound then
+			log.write("Warning: The metadata for \"" .. current .. "\" can not be found!", true)
+		end
+		
+		if unknownFound then
+			log.write("Info: Unrecognized data was found in \"" .. current .. "\".", true)
+		end
+	end
+		
+	--Checking network data file structure
+	
+	if not fs.exists(storageDir .. dir_network) then
+		log.write("Warning: The network data directory missing.  Creating network data directory.", true)
+		fs.makeDir(storageDir .. dir_network)
+	end
+	
+	if not fs.exists(storageDir .. dir_network .. file_commanders) then
+		log.write("Warning: The commanders file is missing.  No commanders will be able to execute remote commands.", true)
+	end
+end
+
+function util.stringToVersion(str, allowNil)	--Converts a version in string format (v1.2.3) into separated, numeric form (1, 2, 3).  Missing values are set to 0 (returned as NIL if 'allowNil' is true)
+	
+	local assignVal = function(verTable, perNum, currNum)		--Assigns currNum to be the version number of the major,minor,or patch based on perNum, stores this in verTable.  This is a sub-function of stringToVersion
+		log.debugWrite("Function: util_stringToVersion_assignVal()")
+	
+		if 0 <= perNum and perNum <= 3 then
+			verTable[perNum + 1] = tonumber(currNum)
+		end
+	end
+	
+	log.debugWrite("Function: util_stringToVersion()")
+	
+	local ver = {}	--A table containing the major, moinor, and patch version being extracted.  Stored in a table so it could be passed similar to pointers
+	
+	str = string.lower(str)
+	
+	local currNum = ""	--The current number being extracted (as a string)
+	local perNum = 0	--The number of periods encountered in the string
+	
+	--'Walk' down the string, extracting the data
+	for index = 1, #str do
+		
+		local iter = str:sub(index, index)	--Get the character at 'index' from the string
+		if iter == "." then
+		
+			--If we get a period, write the number to the appropriate variable, flush the string, and incriment perNum
+			assignVal(ver, perNum, currNum)
+			perNum = perNum + 1
+			currNum = ""
+		elseif tonumber(iter) ~= nil then
+			currNum = (currNum .. iter)
+		end
+	
+		if index == #str then	--If this is the last loop (flush the last value)
+			assignVal(ver, perNum, currNum)
+		end
+	end
+	
+	
+	if allowNil ~= true then
+		-- Check for nil values
+		for index = 1, 3 do
+			if ver[index] == nil then
+				ver[index] = 0
+			end
+		end
+	end
+	return ver[1], ver[2], ver[3]
+end
+
+function util.versionToString(major, minor, patch)	--Converts a triplet of version numbers to string form.  Missing values set to "NIL" (string, not nil type)
+	log.debugWrite("Function: util.versionToString()")
+	
+	local function checkVal(val)
+		if val == nil then
+			val = "NIL"
+		end
+		return val
+	end
+	
+	major = checkVal(major)
+	minor = checkVal(minor)
+	patch = checkVal(patch)
+	
+	return 'v' .. major .. '.' .. minor .. '.' .. patch
+
+end
+
+function version.isEqual(major, minor, patch, major_, minor_, patch_)	--Returns true when the first set of version numbers equal the second set of numbers
+
+	log.debugWrite("Function: version_isEqual()")
+	
+	return (major == major_ and minor == minor_ and patch == patch_)
+end
+
+function version.isGreater(major, minor, patch, major_, minor_, patch_)	--Returns true when the first set of version numbers are greater than the second (AS VERSION NUMBERS, NOT INDIVIDUAL).  Think (first > second)
+	
+	log.debugWrite("Function: version_isGreater()")
+	
+	if major > major_ then
+		return true
+	elseif major < major_ then
+		return false
+	else
+		if minor > minor_ then
+			return true
+		elseif minor < minor_ then
+			return false
+		else
+			if patch > patch_ then
+				return true
+			elseif patch <= patch_ then
+				return false
+			end
+		end
+	end
+end
+
+function version.isLessThan(major, minor, patch, major_, minor_, patch_)	--Returns true when the first set of version numbers are less than the second (AS VERSION NUMBERS, NOT INDIVIDUAL).  Think (first < second)
+	
+	log.debugWrite("Function: version_isLessThan()")
+		
+	if major < major_ then
+		return true
+	elseif major > major_ then
+		return false
+	else
+		if minor < minor_ then
+			return true
+		elseif minor > minor_ then
+			return false
+		else
+			if patch < patch_ then
+				return true
+			else
+				return false
+			end
+		end
+	end
+end
+
+function archive.getLatestVersion()	--Finds and returns the latest version present in dir_archive
+	log.debugWrite("Function: archive_getLatestVersion()")
+
+	--Get the list of directories in the archive directory (Each directory is a version)
+	local dirs = fs.list(storageDir .. dir_archive)
+	
+	local major, minor, patch	--The major, minor, and patch version of the latest version.
+	
+	for index = 1, #dirs do
+		local iter = dirs[index]	--The current directory being processed
+		local cMaj, cMin, cPat	--The major, monor, and patch version being compared to the latest version
+	
+		
+		cMaj, cMin, cPat = util.stringToVersion(iter)
+		
+		--If the current version being processed is newer than the logged one, set the current version as the logged version
+		if major == nil or version.isLessThan(major, minor, patch, cMaj, cMin, cPat) then
+			major = cMaj
+			minor = cMin
+			patch = cPat
+		end
+	end
+	
+	if major == nil then
+		major = 1
+	end
+	
+	if minor == nil then
+		minor = 0
+	end
+	
+	if patch == nil then
+		patch = -1
+	end
+	
+	return major, minor, patch
+end
+
+function archive.doesVersionExist(major, minor, patch)	--Returns true if the archived version specified exists.  Assumes 0 for nil values
+	log.debugWrite("Function: archive.doesVersionExist()")
+	
+	if major == nil then
+		major = 0
+	end
+	
+	if minor == nil then
+		minor = 0
+	end
+	
+	if patch == nil then
+		patch = 0
+	end
+	
+	return fs.exists(storageDir .. dir_archive .. "v" .. major .. "." .. minor .. "." .. patch)
+end
+
+function archive.saveDevVersion(major, minor, patch)	--Saves the current dev build as 'version'.  Leave blank to use the last saved version with the patch + 1.  Also accepts a version-table for 'major'
+	log.debugWrite("Function: archive_saveDevVersion")
+
+	if utility.isTable(major) then
+		minor = major[2]
+		patch = major[3]
+		major = major[1]	--Done last so we don't lose the table
+	end
+	
+	if patch == nil then
+		major, minor, patch = archive.getLatestVersion()
+		patch = patch + 1
+	end
+	
+	fs.copy(storageDir .. dir_dev, storageDir .. dir_archive .. "v" .. major .. "." .. minor .. "." .. patch .. "/")
+	
+	return {major, minor, patch}
+end
+
+function archive.setMetadata(major, minor, patch, flag, value)	--Sets the metadata flag 'flag' to 'value', for archive version 'major', 'minor', 'patch'
+	log.debugWrite("Function: archive.setMetadata()")
+	
+	if not archive.doesVersionExist(major, minor, patch) then
+		log.write("ERROR: Attempted to set metadata for nonexistant archive " .. util.versionToString(major, minor, patch))
+		
+		--Input checking
+		if flag == nil then
+			flag = "NIL"
+		end
+		if value == nil then
+			value = "NIL"
+		end
+		
+		log.write("         Metadata values: " .. flag .. " | " .. value)
+		return
+	end
+	
+	local filePath = storageDir .. dir_archive .. util.versionToString(major, minor, patch) .. '/' .. file_meta
+	local metadata = XML.decodeFile(filePath)
+	
+	metadata[flag] = value
+	
+	XML.encodeFile(metadata, filePath)
+end
+
+function archive.getMetadata(major, minor, patch, flag)		--Returns the metadata value of 'flag' in version 'major', 'minor', 'patch'.  If 'flag' is nil, the entire metedata table will be returned
+	log.debugWrite("Function: archive.getMetadata()")
+	
+	if not archive.doesVersionExist(major, minor, patch) then
+		log.write("ERROR: Attempted to read metedata for nonexistant archive " .. util.versionToString(major, minor, patch))		
+	end
+
+	local filePath = storageDir .. dir_archive .. util.versionToString(major, minor, patch) .. '/' .. file_meta
+	local metadata = XML.decodeFile(filePath)
+	
+	if flag == nil then
+		return metedata
+	else
+		return metadata[flag]
+	end	
+end
+
+function archive.loadDeployedVersion()		--Loads the version value from 'file_deployVer' and stores it in 'deployedVersion'
+	deployedVersion = XML.decodeFile(storageDir_short .. file_deployVer)
+end
+
+function archive.saveDeployedVersion()		--Saves the value from 'deployedVersion' in 'file_deployVer'
+	deployedVersion = {-1, -1, -1}
+	XML.encodeFile(deployedVersion, storageDir_short .. file_deployVer)
+end
+
+function archive.deployVersion(major, minor, patch)		--Sets the archived build specified as the build to send to clients
+
+	if not archive.doesVersionExist(major, minor, patch) then
+	--If the version specified doesn't exist, set the deployed versoin to {-1, -1, -1} (no deployed version)
+		deployedVersion = {-1, -1, -1}
+	else
+		--If the version specified does exist
+		deployedVersion = {major, minor, patch}
+	end
+	
+	archive.saveDeployedVersion()
+end
+
+function network.startup()			--Performs startup functions
+	network.loadCommanders()
+
+
+end
+
+function network.loadCommanders()	--Loads the commanders list
+	network.commanders = XML.decodeFile(storageDir_short .. dir_network .. file_commanders)
+end
+
+function network.saveComanders()	--Saves the commanders list
+	XML.encodeFile(network.commanders, storageDir_short .. dir_network .. file_commanders)
+end
+
+function network.isCommander(id)			--Returns whether or not the sender 'id' is a commander
+	if network.commanders[id] ~= nil then
+		return true
+	else
+		return false
+	end
+end
+
+--Start
+
+startup.startup()
+
+while false do
+
+	--Listen for the next event
+	local event, p1, p2, p3, p4, p5 = os.pullEvent()
+	
+	if event == "modem_message" then
+		--If we get a modem event, pass it off to the comms API
+		
+		comms.processEvent(event, p1, p2, p3, p4, p5)
+		
+	elseif event == "comms_message" then
+		
+		local sender = p3
+		local message = p4.data
+		
+		if sender == nil then
+			--If the sender is nil, log the error
+			log.write("ERROR: Bad sender - NIL!")
+			log.write("Message from NIL sender:")
+			log.write(message)
+			
+		elseif network.isCommander(sender) then
+			--If the sender is a commander
+			
+			if type(message) == "table" then
+				
+				if message.type == nil then	
+					-- message.type should not be nil.  Log the error if this happens
+					log.write("Bad message received from sender:" .. sender .. ". Message:")
+					log.write(message)
+					
+				elseif message.type == protocol.type.command then
+					--If the message is a command
+					
+					if message.command == nil then
+						--If the command is nil, log the erronious message
+						
+						log.write("Bad message received from commander:")
+						log.write(message)
+						
+					else
+						
+						if message.command == protocol.newArchive then
+							--Create new archive
+							
+							if message.command == nil then
+								--If the version isn't specified
+								
+								--verCreated is the version that was created
+								local verCreated = archive.saveDevVersion()
+								
+								local reply = {}
+								
+								reply.type = protocol.type.reply
+								reply.reply = protocol.replies.archiveCreated
+								reply.version = verCreated
+								
+								comms.sendMessage(sender, reply)
+								
+							else
+								--If the version is sepcified
+								
+								local ver --The version 
+								
+								if utility.isTable(message.version) then 
+									--If the version was sent as a table
+									
+									ver = message.version
+									
+								elseif utility.isString(message.version) then
+									--If the version was sent as a string
+									
+									ver = util.stringToVersion(message.version)
+									
+								end
+								
+								if ver[0] == nil or ver[1] == nil or ver[3] == nil then
+									--If any of the values are nil, then report that back to the sender
+									
+									local reply = {}
+									
+									reply.type = protocol.type.reply
+									reply.reply = protocol.replies.badVersion
+									reply.version = ver
+									
+									comms.sendMessage(sender, reply)
+									
+								else
+									--Create the archive, and report it to the sender
+									
+									local verCreated = archive.saveDevVersion(ver)
+									
+									local reply = {}
+									
+									reply.type = protocol.type.reply
+									reply.reply = protocol.replies.archiveCreated
+									reply.version = verCreated
+									
+									comms.sendMessage(sender, reply)
+									
+								end
+							
+							end
+							
+						elseif message.command == protocol.commands.setMeta then
+							--Assign metadata to version
+						
+							if message.version == nil then
+								--If the version is not specified, reply with 'badVersion'
+								
+								local reply = {}
+								
+								reply.type = protocol.type.reply
+								reply.reply = protocol.repllies.badVersion
+								reply.version = message.version
+								
+								
+								comms.sendMessage(sender, reply)
+							
+							else
+								--If the version was sent in some form
+								
+								local ver = {}
+								
+								if utility.isTable(message.version) then
+									--If the version was sent as a table
+									
+									ver = message.version
+									
+								elseif utility.isString(message.version) then
+									--If the version was sent as a string
+									
+									ver = util.versionToString(message.version)
+									
+								end
+								
+								if ver[1] == nil or ver[2] == nil or ver[3] == nil then
+									--If any value in the version is nil, send an error reply
+									
+									local reply = {}
+									
+									reply.type = protocol.type.reply
+									reply.reply = protocol.replies.badVersion
+									reply.version = message.version
+									
+									comms.sendMessage(sender, reply)
+									
+								else
+									--If the version is valid
+									
+									if not archive.doesVersionExist(ver) then
+										--If the version does not exist, send an error reply to the sender
+										
+										local reply = {}
+										
+										reply.type = protocol.type.reply
+										reply.reply = protocol.replies.versionDNE
+										reply.version = ver
+										
+										comms.sendMessage(sender, reply)
+										
+									else
+										--If the version does exist
+										
+										if message.metaFlag == nil then
+											--If the metadata flag is 'nil', send an error reply
+											
+											local reply = {}
+											
+											reply.type = protocol.type.reply
+											reply.reply = protocol.replies.badMetaFlag
+											reply.metaFlag = message.metaFlag
+											
+											comms.sendMessage(sender, reply)
+											
+										else
+										
+											archive.setMetadata(ver[1], ver[2], ver[3], message.metaFlag, message.metaValue)
+											
+											local reply = {}
+											
+											reply.type = protocol.type.reply
+											reply.reply = protocol.replies.metaSet
+											reply.metaFlag = message.metaFlag
+											reply.metaValue = message.metaValue
+											
+											comms.sendMessage(sender, reply)
+										end
+										
+										
+									end
+									
+								end
+								
+							end
+							
+						end 
+						
+					end
+					
+				end
+			end
+			
+		end
+		
+	end
+	
+end 
+
+-- XML.encodeFile(protocol, "../disk/MTOS/Common/Protocols/sourceControlServer.protocol")
+
+
+-- read()
+-- rb()
+

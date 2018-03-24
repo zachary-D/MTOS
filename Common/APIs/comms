@@ -1,0 +1,85 @@
+local version = "v1.0.3a"
+
+local modem
+local communicationChannel = 40
+
+local mode
+
+function setMode(_mode)
+	if _mode == "normal" or _mode == "debug" then
+		mode = _mode
+		log.write("comms mode set to " .. mode)
+	end
+end
+
+function startup(modemSide)
+	--Check to see if there is a modem
+	modem = peripheral.wrap(modemSide)
+	-- modem.open(communicationChannel)
+	modem.open(os.getComputerID())
+end
+
+function shutdown()
+	modem.close(communicationChannel)
+end
+
+function sendMessage(to, message, encryptionMethod)
+	log.setName("comms")
+	if encryptionMethod == nil then
+		encryptionMethod = "none"
+	end
+	local msg = {}
+	msg.protocol = "comms"
+	msg.encryption = encryptionMethod
+	msg.data = message
+	msg.recipient = to
+	msg.transmitTime = os.time()
+	msg.sender = os.getComputerID()
+	log.write("Outgoing\n" .. textutils.serialize(msg), false)
+	--When supported, encrypt the data at this point
+	modem.transmit(communicationChannel, communicationChannel, msg)
+	log.restoreName()
+end
+
+function getMessage(message)
+	log.setName("comms")
+	if mode == "debug" then
+		log.write("Raw data:\n" .. textutils.serialize(arg4))
+	end
+	if message.recipient == os.getComputerID() then
+		log.write("Incoming\n" .. textutils.serialize(message), false)
+		if message.protocol == "comms" then
+			if message.encryption == "none" then
+				log.restoreName()
+				return message
+			else
+				log.write("Unsupported encryption method:" .. textutils.serialize(message.encryption))
+			end
+		else
+			log.write("unsupported protocol:" .. textutils.serialize(message.protocol))
+		end
+	else
+		log.restoreName()
+		return nil
+	end
+end
+
+function waitForMessage(sender)		--Discards events until a message from 'sender' is recieved, and returns the message when that happens
+	-- log.write("Sender:" .. textutils.serialize(sender))
+	local e, a1, a2, a3, a4, a5
+	repeat
+		e, a1, a2, a3, a4, a5 = os.pullEvent()
+		-- log.write(e)
+		-- if e == "modem_message" then
+			-- log.write(textutils.serialize(a4))
+		-- end
+	until e == "modem_message" and type(a4) == "table" and a4.protocol == "comms" and a4.recipient == os.getComputerID() and (sender == nil or a4.sender == sender)
+	return getMessage(a4)
+end
+
+function processEvent(event, arg1, arg2, arg3, arg4, arg5)
+	local message = getMessage(arg4)
+	if message ~= nil then
+		os.queueEvent("comms_message", arg1, message.sender, message.sender, message, arg5)
+	end
+end

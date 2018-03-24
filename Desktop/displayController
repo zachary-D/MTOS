@@ -1,0 +1,156 @@
+version = "2.1.0"
+
+local modemSide = string
+local monitorSide = string
+
+modemSide = "bottom"
+monitorSide = "top"
+
+local modem = peripheral.wrap(modemSide)
+modem.open(os.getComputerID())
+
+local monitor = peripheral.wrap(monitorSide)
+
+controlServer = 23
+
+local run = bool
+run = true
+
+local defaultIndent = 1	--The space between the door listing and the system online message
+local currIndent
+
+local screenWidth, screenHeight
+
+local buttons = {}
+
+function writeStatusLine(elem)			--Writes the status in 'elem'
+	local width = monitor.getSize()
+	local space = width - string.len(elem.status) - string.len(elem.name)
+	local num_spaces = 2 	--The number of spaces in the line
+	monitor.setCursorPos(1, currIndent)
+	monitor.setTextColor(colors[elem.color])
+	monitor.clearLine()
+	monitor.write(elem.name)
+	monitor.write(" ")
+	for x = num_spaces + 1, space do
+		monitor.write("-")
+	end
+	monitor.write(" ")
+	monitor.write(elem.status)
+	currIndent = currIndent + 1
+end
+
+function server_request(request)
+	comms.sendMessage(controlServer, request)
+end
+
+function calculateButtonPositions()
+	buttons[1].xBegin = 2
+	buttons[1].xEnd = buttons[1].xBegin + string.len(buttons[1].name)
+	for i = 2, #buttons  do
+		buttons[i].xBegin = buttons[i - 1].xEnd + 3
+		buttons[i].xEnd = buttons[i].xBegin + string.len(buttons[i].name)
+	end
+end
+
+function createButton(name, serverRequest)
+	local button = {}
+	button.name = name
+	button.xBegin = -1
+	button.xEnd = -1	
+	button.serverRequest = serverRequest
+	button.color = "green"
+	table.insert(buttons, button)
+	calculateButtonPositions()
+end
+
+function drawButtons()
+	for k, v in pairs(buttons) do
+		monitor.setCursorPos(v.xBegin, 19)
+		monitor.setTextColor(colors[v.color])
+		monitor.write("[" .. v.name .. "]")
+	end
+end
+
+function resetButtonColors()
+	for k, v in pairs(buttons) do
+		v.color = "green" 
+	end
+end
+
+
+comms.startup(modemSide)
+
+monitor.setTextColor(colors.white)
+monitor.clear()
+monitor.setCursorPos(1, 1)
+monitor.scroll(-1)
+monitor.write("System Status: Nominal")
+monitor.setCursorPos(1, 1)
+monitor.scroll(-1)
+monitor.write("System online")
+
+screenWidth, screenHidth = monitor.getSize()
+
+comms.sendMessage(23, "updateReq")
+
+createButton("Lockdown", "lockdown")
+createButton("Open all doors", "open:all")
+createButton("Close all doors", "close:all")
+
+drawButtons()
+
+
+
+while run == true do
+	e, p1, p2, p3, p4, p5 = os.pullEvent()
+	if e == "modem_message" then
+		local message = comms.getMessage(p4)
+		if message ~= nil then
+			p3 = message.sender
+			p4 = message.data
+			if p3 == controlServer then
+				if type(p4) == "table" then
+					gotData = true
+					data = p4
+					monitor.clear()
+					monitor.setTextColor(colors["green"])
+					monitor.setCursorPos(1, 1)
+					monitor.write("System online")
+					monitor.setCursorPos(1, 2)
+					monitor.write("System Status: Nominal")
+					currIndent = defaultIndent + 3
+					for i = 1, #data do
+						writeStatusLine(data[i])
+					end
+					resetButtonColors()
+					drawButtons()
+				end
+			else
+				print("Bad sender: " .. p3)
+			end
+		end
+	elseif e == "monitor_touch" then
+		local xPos = p2
+		local yPos = p3
+		if defaultIndent + 3 <= yPos and yPos < defaultIndent + 3 + #data then
+			local yTarg =  yPos - defaultIndent - 2
+			if type(data[yTarg]) == "table" then
+				data[yTarg].color = "purple"
+				currIndent = yPos
+				writeStatusLine(data[yTarg])
+				server_request("toggleState:" .. data[yTarg].UID)
+			end
+		elseif yPos == 19 then
+			resetButtonColors()
+			for k, v in pairs(buttons) do
+				if v.xBegin <= xPos and xPos <= v.xEnd then
+					server_request(v.serverRequest)
+					v.color = "purple"
+				end
+			end			
+			drawButtons()
+		end
+	end
+	
+end

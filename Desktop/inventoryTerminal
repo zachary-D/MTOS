@@ -1,0 +1,263 @@
+local version = "v1.0.0"
+
+local config = {}
+config.modemSide = "back"
+config.configPassword = "authorized"
+
+comms.startup(config.modemSide)
+
+local input
+local inventoryServer = 59
+local messagePriority = 10
+
+function server_createAlias(name, damageValue, alias)
+	
+	if string.find(name, ":") == nil then
+		name = "minecraft:" .. name
+	end
+	
+	local message = {}
+	message.name = name
+	message.damageValue = damageValue
+	message.alias = alias
+	
+	server_sendCommand("command", "newAlias", message)
+	
+end
+
+function server_setIgnoreDamage(name, state)
+	local message = {}
+	message.name = name
+	message.state = state
+	
+	server_sendCommand("command", "setIgnoreDamage", message)
+end
+
+function server_renameCategory(current, new)
+	local message = {}
+	message.currentCategory = current
+	message.newCategory = new
+	
+	server_sendCommand("command", "renameCategory", message)
+end
+
+function server_setCategory(name, damageValue, alias)
+	
+	if string.find(name, ":") == nil then
+		name = "minecraft:" .. name
+	end
+	
+	local message = {}
+	message.name = name
+	message.damageValue = damageValue
+	message.category = alias
+	
+	server_sendCommand("command", "setCategory", message)
+	
+end
+
+function server_sendCommand(messageType, messageCommand, message)
+	message.type = messageType
+	message.command = messageCommand
+	message.priority = 11
+	comms.sendMessage(inventoryServer, message)
+end
+
+while true do
+	shell.run("clear")
+	print("Inventory system options:")
+	print("1)Store from main intake")
+	print("2)Store from roof")
+	print("3)Get list of items")
+	print("4)Retrieve items (by name, damageValue)")
+	print("5)Retrieve items (by alias)")
+	print("6)Server config")
+	write(">>")
+	input = read()
+	if input == "1" then
+		local message = {}
+		message.type = "command"
+		message.command = "store"
+		message.locType = "intake"
+		message.loc = "main intake chest"
+		message.priority = messagePriority
+		comms.sendMessage(inventoryServer, message)
+	elseif input == "2" then
+		local message = {}
+		message.type = "command"
+		message.command = "store"
+		message.locType = "intake"
+		message.loc = "roof intake 1"
+		message.priority = messagePriority
+		comms.sendMessage(inventoryServer, message)
+	elseif input == "3" then
+		comms.sendMessage(inventoryServer, {["type"] = "command", ["command"] = "getInventory"})
+		local message = comms.waitForMessage(inventoryServer, 5)
+		if message == nil then
+			print("No message recieved!")
+			sleep(1)
+		else
+			-- log.write(textutils.serialize(message.data), true)
+			-- sleep(2)
+			if type(message.data) == "table" then
+				--screen is 20 tall
+				local display = {}
+				for k, v in pairs(message.data) do
+					log.write(textutils.serialize(message.data))
+					for l, w in pairs(message.data[k].damageTypes) do
+						if string.find(k, ":") ~= nil then
+							local entry = {}
+							entry.name = k
+							entry.damageValue = l
+							entry.amount = w.amount
+							table.insert(display, entry)
+						end
+					end
+				end
+				local disp = 0
+				repeat
+					shell.run("clear")
+					for i = 19 * disp + 1, 19 * (disp + 1) do
+						if display[i] ~= nil then
+							write(i .. ">")
+							local name
+							if string.sub(display[i].name, 1, 10) == "minecraft:" then
+								name = string.sub(display[i].name, 11)
+							else
+								name = display[i].name
+							end
+							write(name)
+							write("|")
+							write(display[i].damageValue)
+							write("=")
+							print(display[i].amount)
+						else
+							print("")
+						end
+					end
+					disp = disp + 1
+					write("Page " .. disp .. ">")
+					read()
+				until display[19 * (disp-1)+19] == nil
+			end
+		end
+		
+	elseif input == "4" then
+		local message = {}
+		message.type = "command"
+		message.command = "retrieve"
+		message.item = {}
+		write("name:")
+		message.item.name = read()
+		message.item.damageValue = inp.getNumInp("damageValue:")
+		message.amount = inp.getNumInp("amount:")
+		message.priority = 11
+		if string.find(message.item.name, ":") == nil then
+			message.item.name = "minecraft:" .. message.item.name
+		end
+		comms.sendMessage(inventoryServer, message)
+	elseif input == "5" then
+		local message = {}
+		message.type = "command"
+		message.command = "retrieve"
+		message.item = {}
+		write("name:")
+		message.item.name = read()
+		-- message.item.damageValue = inp.getNumInp("damageValue:")
+		message.amount = inp.getNumInp("amount:")
+		message.priority = 11
+		if string.find(message.item.name, ":") == nil then
+			message.item.name = "alias:" .. message.item.name
+		end
+		comms.sendMessage(inventoryServer, message)
+	elseif input == "6" then
+		write("\nConfig password:")
+		input = read("*")
+		if input == config.configPassword then
+			print("Password accepted") 
+			print("\nPlease ensure to log off afterwards to prevent unauthorized access!\n")
+			
+			repeat
+				shell.run("clear")
+				print("1) new alias")
+				print("2) set ignoreDamage")
+				print("3) set category")
+				print("4) rename category")
+				print("exit) return to main menu")
+				
+				write(">>")
+				input = read()
+				
+				if input == "1" then
+					print("New alais:")
+					write("name>")
+					local name = read()
+					if string.find(name, ":") == nil then
+						name = "minecraft:" .. name
+					end
+					
+					local damageValue = inp.getNumInp("damageValue>")
+					write("Alias>")
+					local alias = read()
+					
+					server_createAlias(name, damageValue, alias)
+				
+				elseif input == "2" then
+					
+					write("name>") 
+					local name = read()
+					if string.find(name, ":") == nil then
+						name = "minecraft:" .. name
+					end
+					
+					local state = inp.getBoolInp("state>")
+					
+					server_setIgnoreDamage(name, state)
+					
+				elseif input == "3" then
+					
+					write("name>")
+					local name = read()
+					
+					if string.find(name, ":") == nil then
+						name = "minecraft:" .. name
+					end
+					 
+					local damageValue
+					 
+					if string.find(name, "alias:") == nil then
+						damageValue = inp.getNumInp("damageValue>")
+					end
+					
+					write("Category>")
+					local category = read()
+					
+					server_setCategory(name, damageValue, category)
+					
+				elseif input == "4" then
+					
+					write("Current Category>")
+					local current = read()
+					
+					write("New Category>")
+					local new = read()
+					
+					server_renameCategory(current, new)
+					
+				elseif string.lower(input) == "exit" then
+					print("Logging off")
+					
+				else
+					print("Invaid option")
+				end
+				
+			until string.lower(input) == "exit"
+			
+		else
+			print("Password rejected!")
+			sleep(1)
+			
+		end
+	end
+	input = ""
+end

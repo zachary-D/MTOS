@@ -1,0 +1,77 @@
+local _PROGRAM_VERSION = "v2.0.0"
+local version = "<error>"	--MTOS version.  Overwritten by the .version file later, this is just a fallback value
+
+local const = {}	--A table of constant values 
+const.versionFilePath = "MTOS/.version" --The path to the version file
+
+print("Booting MTOS")
+
+--Read the MTOS version string
+if fs.exists(const.versionFilePath) and not fs.isDir(const.versionFilePath) then
+
+	local versionFile = fs.open(const.versionFilePath, 'r')
+	
+	if versionFile ~= nil then
+		version = versionFile.readLine()
+	end
+	versionFile.close()
+
+end
+
+--Load and initialize the core API
+if not fs.exists("MTOS/Core/MTOS") then
+	error("Unable to boot!  MTOS API not found!")
+end
+os.loadAPI("MTOS/Core/MTOS")
+-- MTOS.boot()
+
+local APIs_startup = {}	--The names of APIs which have autostartup functions.  They are stored here after they are discovered during API mounting so their startup functions can be called after all APIs have been loaded
+
+--Mount all APIs in the APIs directory
+if fs.exists("MTOS") == false then
+	error("MTOS Install directory not found!")
+else
+	print("Mounting APIs")
+	if fs.exists("MTOS/APIs") == false then
+		print("APIs folder not found!")
+	else
+		for k, v in pairs(fs.list("MTOS/APIs")) do
+			print("Mounting API:" .. v)
+			if os.loadAPI("MTOS/APIs/" .. v) == false then
+				if term.isColor() == true then
+					term.setTextColor(colors.red)
+				else
+					term.setTextColor(colors.gray)
+				end
+				print("API failed to load!")
+				term.setTextColor(colors.white)
+			else
+				if type(_G[v].autoStartup) == "function" then
+					APIs_startup[#APIs_startup + 1] = v	--If they have a function to be called during startup, add it to the 'call later' list, so they can be called after all APIs have been mounted
+				end
+			end
+		end
+		print("APIs loaded")
+	end
+end
+
+--Execute the autoStartup functions of any APIs that have them
+for k, v in pairs(APIs_startup) do
+	_G[v].autoStartup()
+end
+
+--Print the boot message
+print("\n\n-- computer ID information --")
+print("MTOS V" .. version)
+print("Computer ID: " .. os.getComputerID())
+write("Computer label: ")
+if(os.computerLabel() == NIL) then
+  print("<Not set>\n")
+else
+  print(os.computerLabel() .. "\n")
+end
+
+--If it exists, execute the autorun file
+if(fs.exists("MTOSLocal/autorun")) then
+	shell.run("MTOSLocal/autorun")
+end

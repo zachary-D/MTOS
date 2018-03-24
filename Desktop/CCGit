@@ -1,0 +1,114 @@
+local version = "1.0.0a"
+
+if type(log) ~= "table" then
+	error("Log API required")
+end
+
+if type(inp) ~= "table" then
+	error("Inp API required")
+end
+
+local directoryLoc = "MTOSLocal/CCGit"
+
+local currentProject = {}
+local currentFile
+
+--['map'] projects = [vector]{ name, version, desc, files = [vector]{ name, versions = [vector]{versionID, description} } }
+
+function loadProjectNames()		--Returns a table indexed by product names, with each value containing the key (i.e. table["name"] = "name"
+	local projectNames = {}
+	local files = fs.list(directoryLoc)
+	for k,v in pairs(files) do;
+		if fs.exists(directoryLoc .. v .. "/.projectInfo")
+			projectNames[v] = v
+		else
+			log.write(".projectInfo file not found for " .. v .. "!  The project may be corrupted!", true)
+		end
+	end
+end
+
+function loadProject(projectName)
+	if fs.exists(directoryLoc .. projectName) == false then
+		print(projectName .. " not found!")
+	else
+		if fs.exists(directoryLoc .. projectName .. "/.projectInfo") == false then
+			print(projectName .. "/.projectInfo not found.")
+			print("It may still be possible to load the project and to regenerate the .projectInfo file, would you like to attempt this?")
+			local input = inp.getInpYesNo("Attempt to load? > ")
+			error("I'm sorry, this portion hasn't been completed yet.")
+			--FLAG:COMPLETEME
+		else
+			local file = fs.open(directoryLoc .. projectName .. "/.projectInfo", "r")
+			local data = file.readLine()
+			if type(data) == "string" then
+				local project = {}
+				project.name = inp.decode(data, "name")
+				project.desc = inp.decode(data, "desc")
+				project.numFiles = tonumber(inp.decode(data, "numFiles"))
+				local files = {}
+				for i = 1, numFiles do
+					files[i].name = inp.decode(data, "fileName" .. i)
+					files[i].desc = inp.decode(data, "fileDesc" .. i)
+					files[i].versions = {}
+					local numVersions = inp.decode(data, "file" .. i .. "numVersions")
+					for k = 1, numVersions do
+						files[i].versions[k] = {}
+						files[i].versions[k].description = inp.decode(data, "file" .. i .. "version" .. k)
+						files[i].versions[k].version = inp.decode(data, "file" .. i .. "versionID")
+					end
+				end
+				project.files = files
+				return project
+			else
+				log.write(".projectInfo file is empty!", true)
+				return false
+			end
+		end
+	end
+end
+
+function displayProjects()
+	for k,v in pairs(loadProjectNames()) do
+		print(v)
+	end
+end
+
+function exportNewestVersion(exportLocation, wipeDest)
+	if wipeDest == true then		--If wipeDest is true then erase the files in the destination
+		fs.delete(exportLocation)
+	end
+	if fs.exists(exportLocation) == false then		--If exportLocation does not exist, create it
+		fs.makeDir(exportLocation)
+	end
+	--Loop over each file in project.files, find the latest version of the file, and copy it
+	for k, v in pairs(currentProject.files) do
+		if fs.exists(directoryLoc .. "/" .. v) == true then
+			local versions = fs.list(directoryLoc .. "/" .. v)
+			local highV1, highV2, highV3, file
+			for j, w in pairs(versions) do
+				local v1 = tonumber(string.sub(w, string.find(w, "v") + 1, string.find(w, "%.") - 1))
+				local rest = string.sub(w, string.find(w, "%.") + 1, string.len(w))
+				local v2 = tonumber(string.sub(rest, 1, string.find(rest, "%.") - 1))
+				local v3 = tonumber(string.sub(rest, string.find(w, "%."), string.len(rest)))
+				if highV1 == nil or highV1 < v1 or (highV1 == v1 and highV2 < v2) or (highV1 == v1 and highV2 == v2 and highV3 < v3) then
+					highV1 = v1
+					highV2 = v2
+					highV3 = v3
+					file = w
+				end
+			end
+		end
+		--copy the most recent file
+		fs.copy(directoryLoc .. "/" .. v .. "/" .. w, exportLocation .. "/" .. v)
+	end
+end
+
+print("CCGit version " .. version)
+
+local run = true
+
+while run == true do
+	term.clear()
+	print("Please select a project:")
+	displayProjects()
+end

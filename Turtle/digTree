@@ -1,0 +1,25 @@
+if turtle.getFuelLevel() < 100 then
+  error("To little fuel!")
+end
+
+local exists, info = turtle.inspect()
+if exists and info.name == "minecraft:log" then
+
+turtle.dig()
+turtle.forward()
+
+height = 1
+exists, info = turtle.inspectUp()
+while exists and info.name == "minecraft:log" do
+  turtle.digUp()
+  turtle.up()
+  height = height + 1
+  exists, info = turtle.inspectUp()
+end
+
+for i = 1, height do
+  turtle.down()
+end
+else
+    print("There's no tree here!")
+end

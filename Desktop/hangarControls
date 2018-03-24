@@ -1,0 +1,44 @@
+local version = "1.2.1"
+
+local inp = string
+rednet.open("back")
+
+while inp ~= "exit" do
+  print("Options:")
+  print("1)Turtle Doors")
+  print("2)Inventory Door")
+  print("3)Turtle Hatch")
+  print("4)Main Display")
+  print("5)Turtle Status Board")
+  print("6)Hangar Blast Doors")
+  print("7)Nether Portal Gate")
+  print("8)Lockdown")
+  print("or 'exit' to quit")
+  write(">>")
+  inp = read()
+  if inp == "1" then
+    rednet.send(2, "toggleState")
+  elseif inp == "2" then
+    rednet.send(18, "toggleState")
+  elseif inp == "3" then
+    rednet.send(19, "toggleState") 
+  elseif inp == "4" then
+    rednet.send(15, read())
+  elseif inp == "5" then
+    rednet.send(10, read())
+  elseif inp == "6" then
+    rednet.send(6, "toggleState")
+    rednet.send(8, "toggleState")
+  elseif inp == "7" then
+    rednet.send(16, "toggleState")
+  elseif inp == "8" then
+    rednet.send(2, "close")
+    rednet.send(18, "close")
+    rednet.send(19, "close")
+    rednet.send(6, "close")
+    rednet.send(8, "close")
+    rednet.send(16, "close")
+  elseif inp ~= "exit" and inp ~= "quit" then
+    print("Option not found")
+  end
+end

@@ -1,0 +1,232 @@
+local version 	= "1.0.3"
+
+local args = {...}
+
+local run = true
+
+--Psudo-global variables used in both the main program and the functions
+local config = {}
+
+function config_save()
+	XML.encodeFile(config, "treeFarmConfig")
+end
+
+function config_load() 
+	config = XML.decodeFile("treeFarmConfig")
+end
+
+function digTree()		--Harvests and replants a single tree
+	local exists, info = turtle.inspect()
+	turtle.select(1)
+	if exists and info.name == "minecraft:log" then
+		turtle.dig()
+		turtle.forward()
+
+		height = 1
+		exists, info = turtle.inspectUp()
+		while exists and info.name == "minecraft:log" do
+			turtle.digUp()
+			turtle.up()
+			height = height + 1
+			exists, info = turtle.inspectUp()
+		end
+
+		mv.moveY(config.rootPosition.y)
+		turtle.back()
+		while turtle.suck() do end
+	end
+end
+
+function checkSapling()
+	local isBlock, data = turtle.inspect()
+	if (isBlock and data.name == "minecraft:sapling" and data.state.type == "spruce") == false then
+		turtle.dig()
+		selectSapling()
+		turtle.place()
+	end
+end
+
+function selectSapling()
+	local slot = 1
+	local item
+	repeat
+		item = turtle.getItemDetail(slot)
+		slot = slot + 1
+	until (type(item) == "table" and item.name == "minecraft:sapling" and item.damage == config.treeType) or slot == 17
+	-- print(slot)
+	if slot ~= 17 or (type(item) == "table" and item.name == "minecraft:sapling" and item.damage == config.treeType) then
+		slot = slot - 1
+		turtle.select(slot)
+	else
+		mv.move(config.rootPosition)
+		print("Saplings required!")
+		read()
+	end
+end
+
+--Variables
+
+
+
+--Initialization & config loading
+
+config_load()
+
+if config.loaded == nil then	--If the config is empty, apply the default configuration
+	print("Setting default config")
+	config.loaded = true
+	config.harvestInterval = 60
+	config.rootPosition = mv.getPos()
+	config.saplingPickupLocation = mv.getPos()
+	config.storageLocation = mv.getPos()
+	config.dropOffPickupLocation = mv.getPos()
+	config.farmLength = 1
+	config.plantDisp = 2					--The number of blocks between each plant NOT including them.  I.e. 2 = plant, two blanks, and another plant
+	config.commandServer = nil				--The ID of the server that the drone reports to and accepts commands from.  If nil, no status updates are sent, and no commands are accepted
+	config.treeType = 1						--The damage value corresponding to the type of tree (0 is Oak, 1 is Spruce, ...)
+	config.maximumSaplingCount = 64		--The largest number of saplings the drone will carry
+	config.minimumFuelCount = 500		--The minimum amount of fuel the turtle will attempt to maintain
+	config.minimumCharcoalCount = 16	--The minimum amount of charcoal the turtle will carry to use as fuel
+	run = false	-- So that the other config options can be set
+end
+
+--Check startup arguments
+if #args > 0 then
+	if args[1] == "config" then
+		if args[2] == "set" then
+			if args[3] == "saplingPickup" then
+				print("Setting pickup location...")
+				config.saplingPickupLocation = mv.getPos()
+			elseif args[3] == "storageLocation" then
+				print("Setting storage location...")
+				config.storageLocation = mv.getPos()
+			elseif args[3] == "dropOffPickupLocation" then
+				print("Setting dropOff pickup location...")
+				config.dropOffPickupLocation = mv.getPos()
+			end
+		end
+	end
+	run = false
+end
+
+config_save()
+
+if(run) then
+	--Moves to the starting position via an indirect path as to not get stuck on the starting tree
+
+	while config.rootPosition.x + 1 ~= mv.getX() or config.rootPosition.z ~= mv.getZ() do
+		local didMove = false
+		if mv.getX() > config.rootPosition.x + 1 then
+			mv.face("west")
+			didMove = turtle.forward()
+		elseif mv.getX() < config.rootPosition.x + 1 then
+			mv.face("west")
+			didMove = turtle.back()
+		end
+		
+		if not didMove then
+			didMove = false
+			if config.rootPosition.z > mv.getZ() then
+				mv.face("south")
+				didMove = turtle.forward()
+			elseif config.rootPosition.z < mv.getZ() then
+				mv.face("south")
+				didMove = turtle.back()
+			end
+		end
+		
+		if not didMove then
+			if config.rootPosition.y ~= mv.getY() then			
+				if config.rootPosition.y > mv.getY() then
+					turtle.up()
+				elseif config.rootPosition.y < mv.getY() then
+					turtle.down()
+				end
+			end
+		end
+	end
+
+	mv.move(config.rootPosition)
+
+end
+
+while(run) do
+	--Check each tree
+	for i = 0,(config.farmLength - 1) do
+		
+		--Check for required fuel, attempt to refuel if there isn't enough
+		if config.minimumFuelCount > turtle.getFuelLevel() then
+			local success, slot, item = inv.selectItem("coal", 1)
+			if success then
+				--Refuel
+				-- print("Found some fuel")
+				turtle.select(slot)
+				turtle.refuel(item.count)
+			else
+				--Try to get fuel
+				-- print("Going to get fuel!")
+				mv.move(config.dropOffPickupLocation)
+				local charcoalCount = inv.getCountOf("coal", 1)
+				if charcoalCount < config.minimumCharcoalCount then
+					turtle.suck(config.minimumCharcoalCount - charcoalCount)
+				end
+				
+				local success, slot, item = inv.selectItem("coal", 1)
+				
+				if success then
+					turtle.refuel(item.count)
+				end
+			end
+		end
+		
+		--Move to the next tree, and harvest/plant it if necessary
+		mv.moveY(config.rootPosition.y)
+		mv.moveX(config.rootPosition.x + i * (config.plantDisp + 1))
+		mv.moveZ(config.rootPosition.z)
+		mv.face(config.rootPosition.dir)
+		digTree()
+		while turtle.suck() do end
+		checkSapling()
+	end
+	
+	--Pick up saplings from collection chest
+	mv.move(config.saplingPickupLocation)
+	while turtle.suckDown() do end
+	
+	--Store logs at storage location, pickup saplings if needed
+	mv.moveY(config.storageLocation.y)
+	mv.move(config.storageLocation)
+	
+	local saplingCount = 0
+	
+	
+	for slot = 1, 16 do
+		local item = turtle.getItemDetail(slot)
+		if type(item) == "table" then
+			if item.name == "minecraft:sapling" and item.damage == config.treeType then
+				saplingCount = saplingCount + item.count
+				if saplingCount > config.maximumSaplingCount then
+					turtle.select(slot)
+					local dropNum = saplingCount - config.maximumSaplingCount
+					
+					if dropNum > 64 then
+						dropNum = 64
+					end
+					
+					turtle.drop(dropNum)
+				end
+			elseif item.name == "minecraft:coal" and item.damage == 1 then
+				charcoalCount = charcoalCount + item.count
+			else
+				turtle.select(slot)
+				turtle.drop()
+			end		
+		end
+	end
+	
+	
+	
+	mv.moveY(config.rootPosition.y)
+	mv.move(config.rootPosition)
+	sleep(config.harvestInterval)
+end

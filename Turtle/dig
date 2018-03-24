@@ -1,0 +1,75 @@
+local version = "1.2.1"
+
+--Dig_vb3--12-30-2015--
+
+local x = int
+local y = int
+local z = int
+local horizFlip = bool
+
+move = function()
+	while turtle.forward() == false do
+		turtle.dig()
+	end
+end
+
+print("Forward distance?")
+x = tonumber(read())
+print("Horizontal distance?")
+z = tonumber(read())
+print("Depth")
+y = tonumber(read())
+
+local lastRight = bool
+lastRight = true
+
+for j = 1, y do
+  for k = 1, z do
+    for i = 1, x - 1 do
+      turtle.dig()
+      move()
+    end
+    if k < z then
+      if lastRight == true then
+        turtle.turnLeft()
+        turtle.dig()
+        move()
+        turtle.turnLeft()
+        lastRight = false
+      else
+        turtle.turnRight()
+        turtle.dig()
+        move()
+        turtle.turnRight()
+        lastRight = true
+      end
+    end 
+  end
+	if(z%2 == 1) then
+      turtle.turnRight()
+      for k = 1, z - 1 do
+        move()
+      end
+      turtle.turnRight()
+      for i = 1, x - 1 do
+        move()
+      end
+	  turtle.turnRight()
+	  turtle.turnRight()
+	elseif(z%2 == 0) then
+		turtle.turnLeft()
+		for k = 1, z - 1 do
+			move()
+		end
+		turtle.turnLeft()
+    end
+    lastRight = true
+  if j < y then  
+    turtle.digDown()
+    turtle.down()
+  end
+end
+
+for j = 1, y - 1 do
+  turtle.up()
+end

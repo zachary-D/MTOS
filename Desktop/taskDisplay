@@ -1,0 +1,54 @@
+local modemSide = "bottom"
+
+local monitorSide = "left"
+
+local inventoryServer = 59
+
+local monitor = peripheral.wrap(monitorSide)
+monitor.setTextScale(.5)
+comms.startup(modemSide)
+
+log.mirrorPrint(true)
+
+while true do
+	log.write("Awaiting message")
+	local msg = comms.waitForMessage(inventoryServer)
+	local tasks = msg.data
+	monitor.clear()
+	local x, y = monitor.getSize()
+	print(textutils.serialize(tasks))
+	if tasks == nil or #tasks == 0 then
+		local text = "No tasks queued!"
+		monitor.setCursorPos((x - string.len(text))/2, y/2)
+		monitor.write(text)
+	else
+		for k, v in pairs(tasks) do
+			monitor.setCursorPos(1, y)
+			monitor.scroll(1)
+			monitor.write(v.UID)
+			monitor.write("|P:")
+			monitor.write(textutils.serialize(v.priority))
+			monitor.write("> ")
+			monitor.write(v.task.task)
+			if v.task.task == "store" then
+				monitor.setCursorPos(2, y)
+				monitor.scroll(1)
+				monitor.write("\t@ ")
+				monitor.write(v.task.loc)
+			elseif v.task.task == "retrieve" then
+				monitor.write(" -> ")
+				monitor.write(v.task.item.name)
+				monitor.write(" (")
+				monitor.write(textutils.serialize(v.task.item.damageValue))
+				monitor.write(")")
+			end
+			if v.inProgress ~= false then
+				monitor.setCursorPos(1, y)
+				monitor.scroll(1)
+				monitor.write("\tinProgress: ")
+				monitor.write(v.inProgress)
+			end
+		end
+	end
+	-- sleep(30)
+end

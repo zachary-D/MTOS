@@ -1,0 +1,404 @@
+local _API_VERSION = "1.0.0a"
+
+local arrayCorrupt = true --If true, something is wrong with the file structure of one or more disk(s in the array.  When this is true, no read/write operations to the array are allowed, to protect what's left of the data.  Initialized to true, and set to false during startup so the array isn't accessed before it is loaded
+
+local const = {}	--Constants
+const.filesystemVersion = 1		--The filesystem version this version of the API works in.  It CANNOT work in other versions 
+
+const.labels = {}	--Disk labels
+const.labels.RAIDDisk = "MTOS RAID disk"	--The label for a RAID disk that is part of an array
+const.labels.RAIDDisk_empty = "MTOS RAID disk - blank" 	--The label for a RAID disk that is blank
+
+const.dir = {}		--Folder name constants
+const.dir.OSRoot = "MTOSLocal/"	--The 'true root' directory, that contains the root dir.  Used to define the full path to the root dir.
+const.dir.root = "RAID/"	--The folder within MTOSLocal where RAID setup information is written
+const.dir.cache = const.dir.root .. "Cache/"	--A folder used for temporary files
+
+const.file = {}		--Filename constants
+const.file.arrayInfo = "array.ARRINFO"	--The file in the root dir that contains the array table, and all the infomration on the array
+const.file.diskInfo = "info.RAIDDISK"	--The file on each RAID disk containing the array the disk belongs to, and the disk number in the array.
+const.file.cacheInfo = "info.dat"
+
+local array = {}	--stores information on the current array
+
+--Note: in this documentation, %variable% is used to designate that the value of a variable is used.  I.e. var.txt is referring to a file called var.txt, where %var%.txt is referring to a file named with the VALUE of var, with the extension .txt
+
+--[[ Structure of table 'array'
+
+	array.UID	- The UID of the array, present in both the config file on the computer and on each disk.  Used to make sure disks from two separate arrays aren't mistakenly seen as the same array.  UID is generated based off the date & time created and the ID of the computer they were created on.  The UID is generated when the RAID array is created, and is written to new disks when they are added
+	
+	array.filesystemVersion	- The filesystem version the array is using.  (Note: this is NOT like RAID 1, 2, etc.)  Currently there is only version 1, where files are NOT distributed across multiple drives.  In the future, newer versions will hopefully have file 'striping'/'chunking' support.
+	
+	array.autoPopulate	- A bool, specifiying whether or not the RAID controller should automatically add blank MTOS RAID disks found to the array
+	
+	array.disks		- an array where each element contains information on a RAID disk.  Starts at 1, incrimenting up.
+	
+	array.disks[].drive	- The peripheral 'address' of the drive containing the disk (i.e. 'drive_1").  NOTE: this value is not saved in the array file, the drive locations are instead discovered during startup, and stored here.
+	
+	array.disks[].path	- The path to the drive.  Value is not saved, it is instead discovered during setup.  (example: disk12/ )
+	
+	array.fileSysyem	- A table containing the filesystem of the RAID array.  Everything is stored as tables.  Each item has a 'type' entry, which is either 'dir' or 'file.  Directory entries contain a table within them called 'contents' which contain other elements.  Files contain information about where they are stored, as follows:
+	
+	File element contents:
+	file.chunks			- An array, where each element dictates where a section of a file is written.  The chunks are sequential, with each one continuing off from the last 
+	file.chunks[].diskID	- The array ID of the disk the chunk is stored on
+	file.chunks[].name		- The name of the chunk on the disk
+	
+	
+]]--
+
+--[[Disk structure
+	disk/%const.file.diskInfo%	- The file containing the information of the disk.  Contains UID of the array the disk belongs to, and the number of the disk within the array
+	disk/RAID/					- The directory containing the data of the RAID array
+
+]]--
+
+--[[File structure for the %const.file.diskInfo% file (XML format)
+	disk = {}		- Disk is the table that contains the XML data from the file
+	
+	disk.arrayUID	- The UID of the array this disk belongs to
+	
+	disk.id			- The ID of the disk within the array.  Starts at 1, incrimenting up.
+]]--
+
+--Returns the full path to 'location', with the MTOSLocal directory, unless 'ignorePrefix' is true
+local function getPathTo(location, ignorePrefix)
+	log.setName("RAID")
+	local ret = ""
+	
+	if ignorePrefix ~= true then
+		ret = const.dir.OSRoot
+	end
+	
+	ret = ret .. const.dir.root
+	
+	log.restoreName()
+	return ret .. location
+end
+
+--Writes the reason for the array being corrupt to the log, and sets the array corruption flag to true
+local function corrupt(reason)
+	log.setName("RAID")
+	arrayCorrupt = true
+	log.write("ERROR: ARRAY CORRUPTION DETECTED.  " .. reason, true)
+	log.restoreName()
+end
+
+function locateDisks()
+	--Checks all disks connected to the system to see if they are RAID disks.  If they are RAID disks with data, they are mounted.  If they are blank RAID disks, they are either ignored or added to the array if array.autoPopulate is true.
+	
+	log.setName("RAID")
+	
+	for k, drive in pairs(peripheral.getNames()) do
+		if drive:find("drive_") ~= nil then
+			--Makes sure the peripeheral being checked is a drive
+			
+			if disk.getLabel(drive) == const.labels.RAIDDisk then
+				--If the drive is a RAID disk
+				local path = disk.getMountPath(drive)
+				if fs.exists(path .. '/' .. const.file.diskInfo) then 
+					--If the disk info file was found on the RAID disk
+					
+					local diskInfo = XML.decodeFile(path .. '/' .. const.file.diskInfo, true)
+					
+					--IN PROGRESS
+					
+					if diskInfo.arrayUID == array.UID then 
+						--If the array ID on the disk matches the ID of this array
+						
+						if diskInfo.id == nil then
+						
+							corrupt("Disk id for " .. drive .. " cannot be nil!")
+							
+						elseif diskInfo.id <= 0 then
+							corrupt("Disk id for " .. drive .. " must be >0!")
+							
+						else
+							--The disk id is a valid index
+							
+							if array.disks[diskInfo.id] == nil then
+								--If the entry for the current disk is not found in the disk array, the array is corrupt
+								corrupt("Array entry for disk " .. drive .. " not found!")
+							
+							elseif not utility.isTable(array.disks[diskInfo.id]) then
+								--We expect array.disks[index] to be a table. 
+								corrupt("Array entry for ID " .. diskInfo.id .. " is not a table!")
+								
+							else
+								--If it is a table (as we expect), assign the disk information to that element
+								
+								array.disks[diskInfo.id].drive = drive
+								array.disks[diskInfo.id].path = disk.getMountPath(drive)
+								log.write("Disk located: " .. drive .. " at " .. path)
+							end
+							
+						end
+						
+					else
+						--If the disk does not belong to this array
+						log.write("MTOS RAID disk found, but it does not belong to this array.  Skipping.")
+						
+					end
+					
+				else
+					--If the disk info file is missing on this RAID disk
+					corrupt("The " .. const.file.diskInfo .. " file for " .. drive .. " is missing.")
+				end	
+				
+			elseif disk.getLabel(drive) == const.labels.RAIDDisk_empty then
+				--IN PROGRESS : format the drive and add it to the array if array.autoPopulate is true
+				
+				if array.autoPopulate then
+					--If array.autoPopulate is true, automatically add the new disk to the array
+					
+					disk.setLabel(drive, const.labels.RAIDDisk)
+					local diskInfo = {}
+					diskInfo.arrayUID = array.UID	--Set the disk to be a member of the current RAID array
+					diskInfo.id = #array.disks + 1	--Set this disk's ID to be the disk after the last one
+					array.disks[diskInfo.id] = {} --Create a entry for the disk in array.disks
+					array.disks[diskInfo.id].drive = drive
+					array.disks[diskInfo.id].path = disk.getMountPath(drive)
+					
+					XML.encodeFile(diskInfo, disk.getMountPath(drive) .. '/' .. const.file.diskInfo, true)
+					
+					log.write("New RAID disk automatically added : " .. drive )
+				
+				else
+					--If array.autoPopulate is not true, do nothing.
+					log.write("Blank RAID disk found: " .. drive .. ".  Ignoring.")
+					
+				end
+				
+			end			
+		end
+	end
+	
+	--Loop over array.disks
+	for i = 1, #array.disks do
+		if array.disks[i].drive == nil then
+			corrupt("The drive for array.disks[" .. i .. "] is nil!  This likely means the drive is missing!")
+		elseif array.disks[i].path == nil then
+			corrupt("The drive for array.path[" .. i .. "] is nil!  This likely means the drive is missing!")
+		end		
+	end
+	if arrayCorrupt then
+		error("Array integregity compromised!")
+	end
+	
+	log.restoreName()
+end
+
+--Validates the data in 'array', and returns true if it is all valid.  (Validation includes checking that the drives exist)
+function validateArrayData()
+	log.setName("RAID")
+	
+	if array.filesystemVersion ~= const.filesystemVersion then
+		print(array.filesystemVersion)
+		print(const.filesystemVersion)
+		corrupt("Filesystem version mismatch!  The array cannot be loaded!")
+		error("Filesystem version mismatch!  The array cannot be loaded!")
+	end
+	
+	if array.UID == nil then
+		corrupt("Array UID missing")
+		error("Array UID missing!")
+	end
+	
+	if array.autoPopulate ~= true then
+		--If autoPopulate is anything except true, then set it to false.  (so that if it is 'nil' or some other invalid value, it is defaulted to false)
+		array.autoPopulate = false
+	end
+	
+	if not utility.isTable(array.disks) then
+		corrupt("array.disks is not a table!")
+		error("array.disks is not a table!")
+	end
+	
+	--Make sure every entry in array.disks is a table (if it exists)
+	for i = 1, #array.disks do
+		if not utility.isTable(array.disks[i]) then
+			print(i)
+			corrupt("array.disks[" .. i .. "] is not a table!")
+		end
+	end
+	if arrayCorrupt then
+		_G.array = array
+		error("Element(s) in array.disks are not tables!")
+	end
+	
+	locateDisks()
+	
+	log.restoreName()
+end
+
+function loadArray()
+	log.setName("RAID")
+	if fs.exists(getPathTo(const.file.arrayInfo)) then
+		--If there is a RAID infomration file on the disk
+		array = XML.decodeFile(getPathTo(const.file.arrayInfo, true))
+		
+		if utility.isTable(array.disks) then
+			
+			--Erase the drive name and mount path from each drive entry.  (We expect it to start as nil, so it can be re-initialized)
+			--Loop until the drive we are trying to index does not exist
+			local i = 1
+			while array.disks[i] ~= nil do 
+				array.disks[i].drive = nil
+				array.disks[i].path = nil
+				i = i + 1
+			end
+		
+		end
+		
+		validateArrayData()
+	else
+		--If there is no RAID file on the disk
+		log.write("No RAID array file found")
+	end
+	log.restoreName()
+end
+
+function saveArray()
+	log.setName("RAID")
+	XML.encodeFile(array, getPathTo(const.file.arrayInfo, true))
+	log.restoreName()
+end
+
+--Runs when the comptuer is loaded.  Loads disk arrays and prepares for read/write operations
+function autoStartup()
+	log.setName("RAID")
+	
+	arrayCorrupt = false
+	
+	if not fs.exists(getPathTo("")) then
+		log.write("No RAID array file found")
+	else
+		
+		if not fs.exists(getPathTo(const.dir.cache)) then
+			fs.makeDir(getPathTo(const.dir.cache))
+		end
+	
+		loadArray()
+	end
+	
+	
+	
+	log.restoreName()
+end
+
+--Creates a new RAID array, and populates it with all blank drives attached
+function createArray()
+	log.setName("RAID")
+	
+	arrayCorrupt = false
+	
+	array.UID = os.getComputerID() .. os.day() .. os.time()
+	array.autoPopulate = true
+	array.filesystemVersion = const.filesystemVersion
+	
+	array.disks = {}
+	
+	locateDisks()
+	
+	saveArray()
+	
+	log.write("Finished creating RAID array.  " .. #array.disks .. " disks found", true)
+	log.restoreName()
+end
+
+--Formats ALL ATTACHED RAID DRIVES
+function destroyArray()
+	log.setName("RAID")
+	
+	log.write("WARNING: REFORMATTING ALL DRIVES", true)
+	for k, drive in pairs(peripheral.getNames()) do
+		if drive:find("drive") ~= nil then	--Make sure it's a drive
+			if disk.getLabel(drive) == const.labels.RAIDDisk then	--Make sure it's a RAID disk
+				local path = disk.getMountPath(drive)
+				
+				for _k, _v in pairs(fs.list(path)) do
+					fs.delete(path .. '/' .. _v)
+				end
+				
+				disk.setLabel(drive, const.labels.RAIDDisk_empty)
+			end
+		end
+	end
+	
+	log.write("WARNING: DELETING LOCAL RAID FILE", true)
+	
+	fs.delete(getPathTo(const.file.arrayInfo))
+	
+	log.write("Formatting complete.", true)
+	
+	log.restoreName()
+end
+
+--Writes a file to the array, passed as an array where each element is a line in the file.  The name of the file is fileName
+function writeTable(tab, filename)
+	
+	if arrayCorrupt then
+		error("Array corrupt!  Unable to preform disk operations!")
+	end
+	
+	
+end
+
+--Writes a file to the array from the local storage on the computer hosting the RAID array
+function writeFile(path)
+	
+	if arrayCorrupt then
+		error("Array corrupt!  Unable to preform disk operations!")
+	end
+	
+	--Check to see if we need to remove an older file from other location(s) on the array.  Take the size of this file into account when calculating free space (add the file's size to the free space on the drive(s)
+	
+	local fSize = fs.getSize(const.dir.cache .. path)
+	
+	--Try to place the file on the disk with the lowest amount of free space that can still support it
+	
+	local lowestDisk	--The INDEX of the drive with the lowest amount of free space (that can still support the file)
+	local lowestSpace	--The amount of free space on the disk indicated by lowestDisk
+	
+	--Get the free space on each disk
+	for k, v in pairs(array.disks) do
+		local lSpace = fs.getFreeSpace(v.path)
+		
+		if lSpace >= fSize then
+			--If the disk has enough space to support the file
+			
+			if lowestSpace ~= nil or lowestSpace > lSpace then
+				--If the free space on the current disk is smaller that the size on the last smalles disk, or there is no last smallest disk, set the 
+				lowestSpace = lSpace
+				lowestdisk = k
+			end
+			
+		end
+		
+	end
+	
+	--IN PROGRESS: If lowestDisk == nil, then there is no single disk that can successfully support the file.  Therefore, it must be split into chunks and written across two or more disks
+	
+	if lowestDisk ~= nil then
+		
+		
+		
+	else
+		--There is no disk with enough free space to write the file to the disk as a whole
+		
+	end
+	
+	
+	--IN PROGRESS: Write the file to the disk chosen.
+	
+end
+
+--Reads data from the array
+function read()
+	
+	if arrayCorrupt then
+		error("Array corrupt!  Unable to preform disk operations!")
+	end
+	
+	
+end

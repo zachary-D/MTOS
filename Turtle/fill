@@ -1,0 +1,34 @@
+ local version = "1.2.1"
+ 
+ local blockedCount = int
+ local slot = int
+ blockedCount = 0
+ slot = 1
+ turtle.select(1)
+
+ getFullSlot = function()
+	while turtle.getItemCount(slot) == 0 do
+		if slot >= 16 then
+			turtle.select(1)
+			slot = 1
+		else
+			turtle.select(slot + 1)
+			slot = slot + 1
+		end
+	end
+end
+ 
+ 
+ while blockedCount < 5 do
+	while turtle.back() == true do
+		blockedCount = 1
+		getFullSlot()
+		turtle.place()
+	end
+	turtle.turnLeft()
+	blockedCount = blockedCount + 1
+	print(blockedCount)
+ end
+ turtle.up()
+ getFullSlot()
+ turtle.placeDown()

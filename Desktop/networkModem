@@ -1,0 +1,24 @@
+local version = "v1.0.0a"
+
+log.setName("networkModem")
+log.write("Modem version " .. version .. " online", true)
+
+local modemSide = "top"
+local modem = peripheral.wrap(modemSide)
+
+modem.open(20)
+
+while true do
+	event, arg1, arg2, arg3, arg4, arg5 = os.pullEvent()
+	if event == "modem_message" then
+		if type(arg4) == "table" then
+			if arg4.protocol == "comms" then
+				if type(arg4.recipient) == "number" then
+					modem.transmit(arg4.recipient, 0, arg4)
+				end
+			end
+		end
+	end
+end
+
+modem.close(20)

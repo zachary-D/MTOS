@@ -1,0 +1,219 @@
+local version = "v2.2.5a"
+
+--variables used by getInputPullEvent
+local acceptUserInput = true 	--When false, all input is ignored
+local inputString = ""	--The string being constructed
+local shiftR = false
+local shiftL = false
+local caps = false
+local ctrlR = false
+local ctrlL = false
+local altR = false
+local altL = false
+local numLock = true
+local validChars = {}		--A table of all valid key chars (key == char == keyID)
+local validCharRanges = {41, {2, 13}, {16, 27}, 43, {30, 40}, {44, 53}, 57, 55, {71, 83}}		--The ranges validChars is generated from
+local swapChars = {["one"] = "1", ["two"] = "2", ["three"] = "3", ["four"] = "4", ["five"] = "5", ["six"] = "6", ["seven"] = "7", ["eight"] = "8", ["nine"] = "9", ["zero"] = "0", ["space"] = " ", ["minus"] = "-", ["equals"] = "=", ["semiColon"] = ";", ["apostrophe"] = "'", ["grave"] = "`", ["comma"] = ",", ["period"] = ".", ["slash"] = "/", ["leftBracket"] = "[", ["rightBracket"] = "]", ["backslash"] = "\\"}		--A table of key values that are remapped to other things by default (i.e. "one" -> 1)
+local shiftChars = {["`"] = "~", ["1"]= "!", ["2"] = "@", ["3"] = "#", ["4"] = "$", ["5"] = "%", ["6"] = "^", ["7"] = "&", ["8"] = "*", ["9"] = "(", ["0"] = ")", ["-"] = "_", ["="] = "+", ["["] = "{", ["]"] = "}", [";"] = ":", ["'"] = "\"", [","] = "<", ["."] = ">", ["/"] = "?"}		--A table of keys (indexed by key VALUE) that have different values based on the shift key, NOT including capitolization (i.e. 8 + shift -> *)
+local cursorPosX, cursorPosY
+local displayUserTextAs
+
+function acceptInput(state)
+	acceptUserInput = state
+end
+
+function autoStartup()
+	for k, v in pairs(validCharRanges) do
+		if type(v) == "table" then
+			for i = v[1], v[2] do
+				validChars[i] = i
+			end
+		elseif type(v) == "number" then
+			validChars[v] = v
+		end
+	end
+end
+
+function setCursorPos(x, y)
+	if x == nil then
+	cursorPosX, cursorPosY = term.getCursorPos()
+	else
+		cursorPosX, cursorPosY = x, y
+	end
+end
+
+function updateUserInputDisplayed()			--Updates the prompt on screen to reflect what the user has entered/removed from the string
+	local width, height = term.getSize()
+	local disp = string.len(inputString) - (width - cursorPosX)
+	if disp < 0 then
+		disp = 0
+	end
+	local dispSeg = string.sub(inputString, disp)
+	if displayUserTextAs ~= nil then
+		dispSeg = ""
+		for i = 1, string.len(inputString) - disp do
+			dispSeg = dispSeg .. displayUserTextAs
+		end
+	end
+	term.setCursorPos(cursorPosX, cursorPosY)
+	term.write(dispSeg)
+	term.setCursorBlink(acceptUserInput)
+end
+
+function displayUserText(display)		--If display == nil, then what the user types is displayed.  Otherwise, the value of 'display' is substituted in the place of each character
+	displayUserTextAs = display
+end
+
+function getInputPullEvent(e, arg1, arg2)
+	if acceptUserInput == true then
+		if inputString == "" then
+			setCursorPos()
+		end
+		if e == "key" then							--If the event is a key being pressed
+			if validChars[arg1] ~= nil then				--If the key pressed is a valid character
+				local character = keys.getName(arg1)	--Convert the key ID to a character
+				if swapChars[character] ~= nil then		--If the character (or string that represents a character) is remapped to anything else, change it to the new value
+					character = swapChars[character]
+				end
+				
+				if (shiftR or shiftL) then		--If any of the shift keys are pressed, 'shift swap' the character
+					if shiftChars[character] ~= nil then
+						character = shiftChars[character]
+					elseif caps == false then	--Otherwise, if shift is pressed and caps lock is off, capitolize the character
+						character = string.upper(character)
+					end
+				end
+				inputString = inputString .. character
+				updateUserInputDisplayed()
+			elseif arg1 ==  42 then	--Left shift
+				shiftL = true
+			elseif arg1 == 29 then	--Left control
+				ctrlL = true
+			elseif arg1 == 56 then	--Left alt
+				altL = true
+			elseif arg1 == 184 then	--Right alt
+				altR = true
+			elseif arg1 == 157 then	--Right control
+				ctrlR = true
+			elseif arg1 == 54 then	--Right shift
+				shiftR = true
+			elseif arg1 == 58 then	--Caps lock
+				caps = not caps 	--Invert the value of caps
+			elseif arg1 == 69 then	--Num lock
+				numLock = not numLock	--Invert the value of numLock
+			elseif arg1 == 28 then	--Enter
+				--Export the string to the event queue as a "userInput" event, and empty the inputString
+				os.queueEvent("userInput", inputString)
+				inputString = ""
+				print("")
+			elseif arg1 == 14 then	--Backspace
+				if inputString ~= "" then
+					--print(string.len(inputString) - 1)
+					inputString = string.sub(inputString, 1, string.len(inputString) - 1)
+					updateUserInputDisplayed()
+					write(" ")						--TODO streamline this hack of a method
+					updateUserInputDisplayed()
+				end
+			end
+		elseif e == "key_up" then 					--If the event is a key being released
+			if arg1 == 42 then		--Left shift
+				shiftL = false
+			elseif arg1 == 29 then	--Left control
+				ctrlL = false
+			elseif arg1 == 56 then	--Left alt
+				altL = false
+			elseif arg1 == 184 then	--Right alt
+				altR = false
+			elseif arg1 == 157 then	--Right control
+				ctrlR = false
+			elseif arg1 == 54 then	--Right shift
+				shiftR = false
+			end			
+		end
+	end
+end
+
+getNumInp = function(prompt)
+	local inp
+	repeat
+		if prompt ~= nil then
+			write(prompt)
+		end
+		inp = read()
+		if tonumber(inp) == nil then
+			print("Please input a number")
+		end
+	until tonumber(inp) ~= nil
+	return tonumber(inp)
+end
+
+function getInpYesNo(prompt)
+	local inp
+	repeat
+		write(prompt)
+		inp = read()
+		if string.lower(inp) == "y" or string.lower(inp) == "yes" then
+			inp = true
+		elseif string.lower(inp) == "n" or string.lower(inp) == "no" then
+			inp = true
+		else
+			print("\"" .. inp .. "\" not recognized.  Please enter \"yes\" or \"no\"")
+		end
+	until inp == true or inp == false
+	return inp
+end
+
+function getBoolInp(prompt)
+	local inp
+	repeat
+		write(prompt)
+		inp = read()
+		if inp == "true" then
+			inp = true
+		elseif inp == "false" then
+			inp = false
+		else
+			print("\"" .. inp .. "\" not recognized.  Please enter \"true\" or \"false\"")
+		end
+		
+	until inp == true or inp == false
+	return inp
+end
+
+function decode(data, name)			--Extracts the data called 'name' from string 'data', a psudo-XML string
+	if data == nil or name == nil then
+		error("Not enough arguments!")
+	end
+	local leading = "~" .. name .. "{"
+	local trailing = "}" .. name .. ";"
+	if string.find(data, name) == nil then		--Rewrite to cover all cases (check for tag beginning, ending)
+		error("\"" .. name .. "\" cannot be found in \"" .. data .. "\"")
+	end
+	ret = string.sub(data, string.find(data, leading) + string.len(leading),  string.find(data, trailing) - 1)
+	if ret == "nil" then
+		return nil
+	else
+		return ret
+	end
+end
+
+function encode(data, name)	--Encodes the data 'data' with the name 'name' into psudo-XML
+	if type(data) ~= "string" then
+		data = textutils.serialize(data)
+	end
+	if type(name) ~= "string" then
+		name = textutils.serialize(name)
+	end
+	return "~" .. (name) .. "{" .. (data) .. "}" .. (name) .. ";"
+end
+
+function toBool(value)
+	value = string.lower(value)
+	if value == "true" then
+		return true
+	elseif value == "false" then
+		return false
+	else
+		return nil
+	end
+end

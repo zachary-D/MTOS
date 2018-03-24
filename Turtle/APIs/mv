@@ -1,0 +1,334 @@
+local version = "2.1.8"
+
+--Formerly known as "accurMove_api"
+
+local xCoord = nil
+local yCoord = nil
+local zCoord = nil
+local facing = nil
+
+local oldForward = turtle.forward
+local oldBack = turtle.back
+local oldRight = turtle.turnRight
+local oldLeft = turtle.turnLeft
+local oldUp = turtle.up
+local oldDown = turtle.down
+
+local saveFile = "MTOS/.currPos"
+local tempSaveFile = "MTOS/._currPos"
+
+function autoStartup()
+	setNewMovementFunctions()
+	findPosition()
+end
+
+function setPos(x, y, z, direction)
+	xCoord = x
+	yCoord = y
+	zCoord = z
+	facing = direction
+	savePos()
+end
+
+function getX()
+	return xCoord
+end
+
+function getY()
+	return yCoord
+end
+
+function getZ()
+	return zCoord
+end
+
+function getDir()
+	return facing
+end
+
+function getPos()
+	return {["x"] = getX(), ["y"] = getY(), ["z"] = getZ(), ["dir"] = getDir()}
+end
+
+function findDir()
+	local numTurns = 0
+	while turtle.detect() == true and numTurns < 4 do
+		nRight()
+		numTurns = numTurns + 1
+	end
+	if turtle.detect() == true then
+	
+		if turtle.up() == false then
+			error("Unable to identify direction")
+		end
+		
+		local numTurns2 = 0
+		while turtle.detect() == true and numTurns2 < 4 do
+			nRight()
+			numTurns2 = numTurns2 + 1
+		end
+		if turtle.detect() == true then
+			error("Unable to identify direction")
+		else
+			local lX, lY, lZ = gps.locate()
+			while oldForward() == false do end
+			local cX, cY, cZ = gps.locate()
+			if lX > cX then
+				facing = "west"
+			elseif lX < cX then
+				facing = "east"
+			elseif lZ > cZ then
+				facing = "north"
+			elseif lZ < cZ then
+				facing = "south"
+			end
+			while oldBack() == false do end
+		end
+		for i = 1, numTurns2 do
+			nLeft()
+		end
+	
+		turtle.down()
+	else
+		local lX, lY, lZ = gps.locate()
+		while oldForward() == false do end
+		local cX, cY, cZ = gps.locate()
+		if lX > cX then
+			facing = "west"
+		elseif lX < cX then
+			facing = "east"
+		elseif lZ > cZ then
+			facing = "north"
+		elseif lZ < cZ then
+			facing = "south"
+		end
+		while oldBack() == false do end
+	end
+	for i = 1, numTurns do
+		nLeft()
+	end
+end
+
+function findPosition()
+	local x, y, z = gps.locate()
+	if x ~= nil then
+		xCoord = x
+		yCoord = y
+		zCoord = z
+		findDir()
+		savePos()
+		log.write("Position successfully found!", true)
+		return true
+	end
+	log.write("Unable to determine position!", true)
+	return false
+end
+
+function savePos()
+	file = fs.open(tempSaveFile, "w")
+	file.writeLine(xCoord)
+	file.writeLine(yCoord)
+	file.writeLine(zCoord)
+	file.writeLine(facing)
+	file.close()
+	fs.delete(saveFile)
+	fs.move(tempSaveFile, saveFile)
+end
+
+function loadPos()
+	if fs.exists(saveFile) == true then
+		file = fs.open(saveFile, "r")
+		xCoord = tonumber(file.readLine())
+		yCoord = tonumber(file.readLine())
+		zCoord = tonumber(file.readLine())
+		facing = file.readLine()
+		file.close()
+	elseif fs.exists(tempSaveFile) == true then
+		file = fs.open(tempSaveFile, "r")
+		xCoord = tonumber(file.readLine())
+		yCoord = tonumber(file.readLine())
+		zCoord = tonumber(file.readLine())
+		facing = file.readLine()
+		file.close()
+	else
+		print("no file!")
+	end
+end
+
+function nForward()
+	local didmv = oldForward()
+	if didmv then
+		if facing == "north" then
+			zCoord = zCoord - 1
+		elseif facing == "south" then
+			zCoord = zCoord + 1
+		elseif facing == "east" then
+			xCoord = xCoord + 1
+		elseif facing == "west" then
+			xCoord = xCoord - 1
+		end
+	end
+	savePos()
+	return didmv
+end
+
+function nBack()
+	local didmv = oldBack()
+	if didmv then
+		if facing == "north" then
+			zCoord = zCoord + 1
+		elseif facing == "south" then
+			zCoord = zCoord - 1
+		elseif facing == "east" then
+			xCoord = xCoord - 1
+		elseif facing == "west" then
+			xCoord = xCoord + 1
+		end
+	end
+	savePos()
+	return didmv
+end
+
+function nRight()
+	local didmv = oldRight()
+	if facing == "north" then
+		facing = "east"
+	elseif facing == "east" then
+		facing = "south"
+	elseif facing == "south" then
+		facing = "west"
+	elseif facing == "west" then
+		facing = "north"
+	end
+	savePos()
+	return didmv
+end
+
+function nLeft()
+	local didmv = oldLeft()
+	if facing == "north" then
+		facing = "west"
+	elseif facing == "west" then
+		facing = "south"
+	elseif facing == "south" then
+		facing = "east"
+	elseif facing == "east" then
+		facing = "north"
+	end
+	savePos()
+	return didmv
+end
+
+function nUp()
+	local didmv = oldUp()
+	if didmv == true then
+		yCoord = yCoord + 1
+	end
+	savePos()
+	return didmv
+end
+
+function nDown()
+	local didmv = oldDown()
+	if didmv == true then
+		yCoord = yCoord - 1
+	end
+	savePos()
+	return didmv
+end
+
+function setNewMovementFunctions()
+	turtle.forward = nForward
+	turtle.back = nBack
+	turtle.turnRight = nRight
+	turtle.turnLeft = nLeft
+	turtle.up = nUp
+	turtle.down = nDown
+end
+
+function restoreMovementFunctions()
+	turtle.forward = oldForward
+	turtle.back = oldBack
+	turtle.turnRight = oldRight
+	turtle.turnLeft = oldLeft
+	turtle.up = oldUp
+	turtle.down = oldDown
+end
+
+function moveX(x)
+	if x == nil then
+		log.write("MV API error!: x cannot be nil!")
+	else
+		if getX() ~= x then
+			while getDir() ~= "east" do
+				turtle.turnRight()
+			end
+			
+			while getX() < x do
+				turtle.forward()
+			end
+			
+			while getX() > x do
+				turtle.back()
+			end
+		end
+	end
+end
+
+function moveY(y)
+	while mv.getY() < y do
+		turtle.up()
+	end
+	
+	while mv.getY() > y do
+		turtle.down()
+	end
+end
+
+function moveZ(z)
+	if getZ() ~= z then
+		while getDir() ~= "south" do
+			turtle.turnRight()
+		end
+		
+		while getZ() < z do
+			turtle.forward()
+		end
+		
+		while getZ() > z do
+			turtle.back()
+		end
+	end
+end
+
+function moveXZ(x, z)
+	moveX(x)
+	moveZ(z)
+end
+
+function move(x, y, z, dir)
+	if type(x) == "table" then
+		move(x.x, x.y, x.z, x.dir)
+	else
+		moveX(x)
+		moveZ(z)
+		moveY(y)
+		if dir ~= nil then
+			face(dir)
+		end
+	end
+end
+
+function face(dir)
+	local dir = string.lower(dir)
+	if not (dir == "north" or dir == "east" or dir == "south" or dir == "west") then
+		error(textutils.serialize(dir) .. " is not a direction!")
+	end
+	while getDir() ~= dir do
+		turtle.turnRight()
+	end
+end
+
+function packLocation(x, y, z, dir)		--Packs the cordinates x, y, z, dir into a table
+	return {["x"] = x, ["y"] = y, ["z"] = z, ["dir"] = dir}
+end

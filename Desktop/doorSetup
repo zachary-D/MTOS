@@ -1,0 +1,60 @@
+os.loadAPI("MTOS/APIs/XML")
+os.loadAPI("MTOS/APIs/server")
+
+write("Manually enter values?")
+
+doorSides = {}
+pistonSides = {}
+
+function isSide(side)
+	return side == "top" or side == "bottom" or side == "left" or side == "right" or side == "front" or side == "back"
+end
+
+if read() == "y" then
+	write("modemSide:")
+	modemSide = read()
+	write("doorsClosed:")
+	doorsClosed = inp.toBool(read())
+	lockdown = false
+	print("doorSides: (any invalid side to end)")
+	
+	while true do
+		local a = read()
+		if isSide(a) then
+			table.insert(doorSides, a)
+		else
+			break
+		end
+	end
+	write("pistonSides:")
+	while true do
+		local a = read()
+		if isSide(a) then
+			table.insert(pistonSides, a)
+		else
+			break
+		end
+	end
+	write("pistonClosedSignal:")
+	pistonClosedSignal = inp.toBool(read())
+	
+	controlServer = 23
+end
+
+XML.encodeFile(modemSide, "modemSide")
+
+XML.encodeFile(doorsClosed, "doorsClosed")
+XML.encodeFile(lockdown, "lockdown")
+
+XML.encodeFile(pistonSides, "pistonSides")
+XML.encodeFile(doorSides, "doorSides")
+
+XML.encodeFile(pistonClosedSignal, "pistonClosedSignal")
+
+XML.encodeFile(controlServer, "controlServer")
+
+local autorun = fs.open("MTOSLocal/autorun", "w")
+autorun.write("shell.run(\"MTOS/doorController\")")
+autorun.close()
+
+print("written to file")

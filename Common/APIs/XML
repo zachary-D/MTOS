@@ -1,0 +1,280 @@
+local version = "v1.2.1"
+
+--Description:
+--Used to encode and decode XML files
+--All functions that begin with underscores are meant to be used only by and within the API
+
+--Todo and known issues
+--> the files created are extremely large.  I've gotta find a way to shrink them down.
+--> -> Possibly move the 'dataType' tag inline somehow?
+
+local file		--The file handle created by opening the file 'fileName' in encodeFile()
+local tabDepth	--How many tabs to insert before the data (to make it more readable to humans)
+local lineNum = 0	--The current line in the file being processed, used for error reporting in _corrupt()
+
+--Functions to encode and write data to XML files
+
+function encodeFile(data, fileName, rootDir)	--Encodes the value in 'data' (accepts any type) to the file 'file' (file is a file path, NOT a handle).  If rootDir is not true, the 'MTOSLocal/' directory is automatically appended before the fileName.  WARNING: table orders are NOT preserved explicitly.  (so key 'b' might come before key 'a' when being written, but I'm not entirely sure)
+	log.setName("XML")
+	
+	utility.resetRequeueTimer()
+		
+	--If there is no filetype specified, assume XML
+	if not utility.hasFileExtension(fileName) then
+		fileName = fileName .. ".XML"
+	end
+	
+	--Append the local file
+	if rootDir ~= true then
+		fileName = "MTOSLocal/" .. fileName
+	end
+
+	file = fs.open(fileName .. "_", "w")
+	
+	if file == nil then
+		log.write("ERROR: Unable to open \"" .. fileName .. "\" for writing!")
+		error("Unable to open \"" .. fileName .. "\" for writing!")
+	end
+	
+	tabDepth = 0		--Initialized to this so that tabDepth is 0 when _encodeValue() is run for the first time
+	_encodeValue(data)	
+	file.close()
+	fs.delete(fileName)
+	
+	fs.move(fileName .. "_", fileName)
+	
+	log.restoreName()
+end
+
+function depth_inc()			--Increases the tab depth by 1
+	tabDepth = tabDepth + 1
+end
+
+function depth_dec()			--Decreases the tab depth by 1
+	tabDepth = tabDepth - 1
+end
+
+function _insertTabs()		--Writes the appropriate amount of tabs (stored in the global var 'tabDepth') to the file handle 'file' (global var)
+	local tab = ""
+	-- print(tabDepth)
+	for i = 1, tabDepth do tab = tab .. "\t" end
+	file.write(tab)
+end
+
+function _write(value)		--Writes 'value' directly to the file, only appending the appropriate amount of tabs to the beginning (see _insertTabs()) to the file handle 'file' (global var)
+	_insertTabs()
+	file.writeLine(value)
+end
+
+function _encodeValue(value, name)		--Writes the value 'value' to the file handle 'file' (global var), noting the data types.  'name' is optional, and is the wrapper around the data value (i.e. '<name> [value] </name>)
+	if name ~= nil then
+		_write("<" .. name .. ">")
+		depth_inc()
+	end
+	_encodeValueRaw(type(value), "dataType")
+	_encodeValueRaw(value, "dataValue")
+	if name ~= nil then
+		depth_dec()	
+		_write("</" .. name .. ">")
+	end
+end
+
+function _encodeValueTable(value)	--Writess the table 'value' to the file handle 'file (global var)
+	-- depth_inc()
+	utility.requeueEvents()
+	for key, value in pairs(value) do
+		_write("<entry>")
+		depth_inc()
+		_encodeValue(key, "key")
+		_encodeValue(value, "value")
+		depth_dec()
+		_write("</entry>")
+	end
+	-- depth_dec()
+end
+
+function _encodeValueRaw(value, name)		--Writes the value 'value' using the name 'name' to the file
+	_write("<" .. name .. ">")
+	if value == "nil" then
+		value = "nil"
+	end
+	depth_inc()
+	if type(value) == "table" then
+		_encodeValueTable(value)
+	else
+		_write(value)
+	end
+	depth_dec()
+	_write("</" .. name .. ">")
+end
+
+function decodeFile(fileName, rootDir)		--Decodes the file "fileName".   If rootDir is not true, the 'MTOSLocal/' directory is automatically appended before the fileName.
+	log.setName("XML")
+	
+	utility.resetRequeueTimer()
+	
+	--If there is no filename specified, assume XML
+	if not utility.hasFileExtension(fileName) then
+		fileName = fileName .. ".XML"
+	end
+	
+	if rootDir ~= true then
+		fileName = "MTOSLocal/" .. fileName
+	end
+	
+	if fs.exists(fileName) == false then
+		log.write("WARNING: File " .. fileName .. " not found!")
+		log.restoreName()
+		return {}
+	else
+		lineNum = 0
+		file = fs.open(fileName, "r")
+		
+		local data = _loadData()
+		file.close()
+		if data == nil then
+			data = {}
+		end
+		log.restoreName()
+		return data
+	end
+	
+	log.restoreName()
+end
+
+function _corrupt(message)
+	error("XML file corrupt at line " .. lineNum .. ": " .. message)
+end
+
+function _newLine()			--Loads and retuns a line from the file 'file' (global var).  The line is alos stored in the global var 'line'.  Throws an error if no more lines are available
+	line = file.readLine()
+	-- print(line)
+	lineNum = lineNum + 1
+	if line == nil then
+		_corrupt("file ended too soon!")
+	else
+		while string.sub(line, 1, 1) == "\t" do
+			line = string.sub(line, 2)
+		end
+		return line
+	end
+end
+
+function _loadData()		--Begins to load data from the file, determines the variable type, and calls the appropriate function
+	_newLine()
+	-- write(line)
+	-- write("|")
+	-- write(lineNum)
+	-- print("|_lDA")
+	if line ~= "<dataType>" then
+		_corrupt("Expected dataType tag! <_lD>" .. line)
+	end
+	local dataType = _newLine()
+	-- write(dataType)
+	-- write("|")
+	-- write(lineNum)
+	-- print("|_lDB")
+	if _newLine() == "</dataType>" then
+		if dataType == "table" then
+			return _loadTable()
+		elseif dataType == "string" then
+			return _loadString()
+		elseif dataType == "number" then
+			return _loadNumber()
+		elseif dataType == "boolean" then
+			return _loadBoolean()
+		elseif dataType == "nil" then
+			return _loadNil()
+		end
+	else
+		_corrupt("Expected closing dataType tag! <_lD>")
+	end
+end
+
+function _loadTable()
+	local line = _newLine()
+	local data_table = {}
+	while line == "<dataValue>" do
+		while line ~= "</dataValue>" do
+			line = _newLine()
+			while line == "<entry>" do
+				local key
+				local value
+				while line ~= "</entry>" do
+					line = _newLine()
+					-- write(line)
+					-- write("|")
+					-- write(lineNum)
+					-- write("|")
+					-- print("A")
+					if line == "<key>" then			--Loads the key
+						while line ~= "</key>" do
+							key = _loadData()
+							line = _newLine()
+						end
+					elseif line == "<value>" then	--Loads the value
+						-- print("A_2")
+						while line ~= "</value>" do
+							value = _loadData()
+							-- write(textutils.serialize(value))
+							-- write("|")
+							-- write(lineNum)
+							-- print("|B")
+							line = _newLine()
+						end
+					end
+				end
+				data_table[key] = value
+			end
+		end
+	end
+	return data_table
+end
+
+function _loadNumber()
+	local line = _newLine()
+	local value
+	while line == "<dataValue>" do
+		while line ~= "</dataValue>" do
+			line = _newLine()
+			value = tonumber(line)
+			if value == nil then
+				_corrupt("Expected number, got nil! <_lD>")
+			end
+			line = _newLine()
+		end
+	end
+	return value
+end
+
+function _loadString()
+	local line = _newLine()
+	local value
+	while line == "<dataValue>" do
+		while line ~= "</dataValue>" do
+			value = _newLine()
+			line = _newLine()
+		end
+	end
+	return value
+end
+
+function _loadBoolean()
+	_newLine()
+	local value
+	while line == "<dataValue>" do
+		while line ~= "</dataValue>" do
+			value = inp.toBool(_newLine())
+			_newLine()
+		end
+	end
+	return value
+end
+
+function _loadNil()		--Basically just here to skip to the end of the XML tree associated with storing the nil.
+	local line
+	while line ~= "</dataValue>"do
+		line = _newLine() 	--This is done this way so the loop (hopefully) won't timeout
+	end
+	return nil
+end

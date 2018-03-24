@@ -1,0 +1,28 @@
+local version = "1.0.0"
+
+local run = true
+
+local numTurns = 1
+
+while run do
+	
+	turtle.select(1)
+	
+	while turtle.suck() do end
+	
+	for i = 1, numTurns do
+		turtle.turnRight()
+	end
+	
+	for i = 1, 16 do
+		turtle.select(i)
+		if not turtle.drop() then
+			break
+		end
+	end
+	
+	for i = 1, numTurns do
+		turtle.turnLeft()
+	end
+	
+end

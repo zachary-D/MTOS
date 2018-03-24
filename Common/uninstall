@@ -1,0 +1,33 @@
+local version = "v1.0.0"
+
+local args = {...}
+
+--Files & directories to be removed
+local files = {"MTOS", ".settings", "startup"}
+
+--Bypass the 'are you sure' confirmation if the first argument is 'override'
+local override = (type(args) == "table" and args[1] == "override")
+
+shell.run("cd /")
+
+if override == false then
+	print("Are you sure??")
+	print("Type 'uninstall' to continue.")
+	write("Confirmation>")
+end
+
+
+if override or read() == "uninstall" then
+	for k, v in pairs(files) do
+		if fs.exists(v) then
+			fs.delete(v)
+			print(v .. " deleted")
+		end
+	end
+	
+	if override ~= true then
+		print("MTOS has been uninstalled :(")
+	end
+else
+	print("\nUninstall aborted! :D")
+end

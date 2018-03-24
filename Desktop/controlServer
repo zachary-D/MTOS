@@ -1,0 +1,606 @@
+local version = "v2.0.5"
+
+log.setLogName("controlServer")
+log.setMode("normal")
+log.write("version " .. version)
+
+comms.setMode("debug")
+
+local devices = {}
+
+local commanders = {}			--Stores a list of administrator 'objects', indexed from 1 onward
+devices.commanders = commanders
+
+--Access level is ranked from 0, upwards, with decreasing access as the rank increases.  If the rank of the user is <= the access level, the user may control the device.
+
+local doorControllers = {}		--A list of doorController 'objects', indexed from 1 onward
+devices.doorControllers = doorControllers
+
+local wirelessAdapters = {}		--A list of wireless adapter 'objects', indexed from 1 onward
+devices.wirelessAdapters = wirelessAdapters
+
+local displays = {}				--A list of displays 'objects', indexed from 1 onward
+devices.displays = displays
+
+local turtles = {}				--A list of turtle 'objects', indexed from 1 onward
+devices.turtles = turtles
+
+local tasks = {}
+
+local modemSide = "top"
+
+local modem
+
+local eventTimers = {}			--A table of timers, with the key as the timer ID and the value as a table or string with instructions on what to do when the event is called
+
+local constants = {}
+constants.responseTimeout = 2
+
+local updateDisplay	= true		--Controls if the display connected is updated with new information.  When true, new information will be sent to the display, and then the value will be set back to false once complete, restarting the 'cycle'
+
+if type(log) ~= "table" then
+	error("log API is missing!")
+end
+
+function newCommander(ID, name, accessLevel)
+	if ID ~= nil then
+		if name == nil then
+			name = "unset"
+		end
+		if accessLevel == nil then
+			accessLevel = -1
+		end
+		local commander = {}
+		commander.id = ID
+		commander.name = name
+		commander.accessLevel = accessLevel
+		local x = 1
+		while commanders[x] ~= nil do
+			x = x + 1
+		end
+		commanders[x] = commander
+	end
+end
+
+function newWirelessAdapter(ID, name, requiredRank)
+	if ID ~= nil then
+		if name == nil then
+			name = "unset"
+		end
+		if requiredRank == nil then
+			requiredRank = 0
+		end
+		local adapter = {}
+		adapter.id = ID
+		adapter.name = name
+		adapter.accessLevel = requiredRank
+		local x = 1
+		while wirelessAdapters[x] ~= nil do
+			x = x + 1
+		end
+		wirelessAdapters[x] = adapter
+	end	
+end
+
+function newDoor(ID, name, requiredRank)
+	if ID ~= nil then
+		if name == nil then
+			name = "unset"
+		end
+		if requiredRank == nil then
+			requiredRank = 0
+		end
+		local door = {}
+		if type(ID) == "table" then
+			door.id = ID
+			local tab = {}
+			local tab2 = {}
+			for x = 1, #ID do
+				tab[x] = "unknown"
+				tab2[x] = true
+			end
+			door.status = {}
+			door.lastStatus = {}
+			door.status = tab
+			door.lastStatus = tab	
+			door.expectingResponse = tab2
+		else
+			door.id = ID
+			door.status = "unknown"
+			door.lastStatus = "unknown"
+			door.expectingResponse = true
+		end
+		door.name = name
+		door.accessLevel = requiredRank
+		door.UID = #doorControllers + 1
+		table.insert(doorControllers, door)
+	end
+end
+
+function newDisplay(ID, name, accessLevel)
+	if ID ~= nil then
+		if name == nil then
+			name = "unset"
+		end
+		if accessLevel == nil then
+			accessLevel = 0
+		end
+		local display = {}
+		display.id = ID
+		display.name = name
+		display.accessLevel = accessLevel
+		table.insert(displays, display)
+	end
+end
+
+function checkDeviceID(ID, tableOfNames)		--returns the class, index, and sub-index (if applicable) of the device with ID 'ID', in the 'devices' table, by default 
+	if tableOfNames == nil then
+		tableOfNames = devices
+	end
+	for deviceClass, devices in pairs(tableOfNames) do
+		for deviceNum, device in pairs(devices) do
+			if type(device.id) == "number" then
+				if device.id == ID then
+					return deviceClass, deviceNum, nil
+				end
+			elseif type(device.id) == "table" then
+				for subIndex, id in pairs(device.id) do
+					if id == ID then
+						return deviceClass, deviceNum, subIndex
+					end
+				end
+			end
+		end
+	end
+end
+
+function loadTasks()
+	if fs.exists("MTOS/.controllerTasks") then
+		local file = fs.open("MTOS/.controllerTasks", "r")
+		local line = nil
+		repeat
+			line = file.readLine()
+			if line ~= "" and line ~= nil then
+				tasks[#tasks] = line
+			end
+			file.close()
+		until line == nil 
+		log.write("Controller tasks loaded")
+	else
+		saveTasks()
+		log.write("No previous task list found")
+	end
+end
+
+function saveTasks()
+	local file = fs.open("MTOS/.controllerTasks", "w")
+	for k, v in pairs(tasks) do
+		file.writeLine(v)
+	end
+	file.close()
+	log.write("Controller tasks saved")
+end
+
+function addTask(task)
+	table.insert(tasks, task)
+	saveTasks()
+end
+
+function deleteTask(pos)
+	if pos == nil then
+		pos = 1
+	end
+	table.remove(tasks, 1)
+	saveTasks()
+end
+
+function sendMessage(target, message)
+	comms.sendMessage(target, message)
+end
+
+function door_setState(doorID, state, forceSend)		--Tells the door at 'doorID' to move to state 'state'.  If forceSend == true, input checking on 'state' is ignored
+	door = doorControllers[doorID]
+	if door == nil then
+		log.write(mergeStrings("Bad door ID: Attempting to preform operations on nonexistant door \"", mergeStrings(doorID, "\"")))
+	else
+		if forceSend ~= true then
+			forceSend = false
+		end
+		local goodInp = false
+		if forceSend == false and type(state) == "string" then
+			if state == "open" or state == "close" or state == "toggleState" then
+				goodInp = true
+			end
+		end
+		if goodInp == true or forceSend == true then
+			if type(door) == "table" then
+				if type(door.id) == "number" then
+					sendMessage(door.id, state)
+					eventTimers[os.startTimer(constants.responseTimeout)] = getResponseTimeoutEvent(door.id)
+					door.expectingResponse = true
+				elseif type(door.id) == "table" then
+					for k, v in pairs(door.id) do
+						sendMessage(door.id[k], state)
+						eventTimers[os.startTimer(constants.responseTimeout)] = getResponseTimeoutEvent(door.id[k])
+						class, index, sub = checkDeviceID(v)
+						doorControllers[index].expectingResponse[sub] = true
+					end
+				end
+			end
+		end
+	end
+end
+
+function door_close(door)
+	door_setState(door, "close")
+end
+
+function door_open(door)
+	door_setState(door, "open")
+end
+
+function getResponseTimeoutEvent(ID)		--Returns a table to be stored in the eventTimers table, to be handled when its timer event occurs
+	local task = {}
+	task.task = "responseTimeout"
+	task.id = ID
+	return task
+end
+
+function printEvent(override)
+	local debug = false
+	if debug == true or override == true then
+		term.clearLine()
+		log.write("event:" .. event, true)
+		term.clearLine()
+		log.write(mergeStrings("arg1:", arg1), true)
+		term.clearLine()
+		log.write(mergeStrings("arg2:", arg2), true)
+		term.clearLine()
+		log.write(mergeStrings("arg3:", arg3), true)
+		term.clearLine()
+		log.write(mergeStrings("arg4:", arg4), true)
+		term.clearLine()
+		log.write(mergeStrings("arg5:", arg5), true)
+	end
+end
+
+function mergeStrings(a, b)		--Combines two args into strings, replacing nil with "nil" if one of the values is nil
+	return textutils.serialize(a) .. " " .. textutils.serialize(b)
+end
+
+function checkInput(total, cmd)		--Checks if 'cmd' matches the beginning of 'total'
+	if cmd == string.sub(total, 0, string.len(cmd)) then
+		return true
+	else
+		return false
+	end
+end
+
+function getInputMessage(total, cmd)
+	return string.sub(total, string.len(cmd)+1)
+end
+
+function export_doorStatus(accessLevel)
+	local data = {}
+	for doorNum, door in pairs(doorControllers) do
+		if door.accessLevel >= accessLevel then
+			local elem = {}
+			--elem = a table containing the name and state of a single door, along with other information
+			elem.name = door.name
+			elem.UID = door.UID
+			if type(door.status) == "string" then
+				elem.status = door.status
+				if elem.status == "closed" then
+					elem.color = "green"
+				elseif elem.status == "open" then
+					elem.color = "blue"
+				elseif elem.status == "CONN ERROR" then
+					elem.color = "red"
+				else
+					elem.color = "yellow"
+				end
+				elem.id = door.id
+			elseif type(door.status) == "table" then
+				local state = nil
+				local badSync = false
+				local errorState = false
+				for sub, subState in pairs(door.status) do
+					if state == nil then
+						state = subState
+					end
+					if subState == "CONN ERROR" then
+						errorState = true
+					end
+					if state ~= subState then
+						badSync = true
+					end
+				end
+				if errorState == true then
+					elem.status = "CONN ERROR"
+					elem.color = "red"
+				elseif badSync == true then
+					elem.status = "mixed"
+					elem.color = "yellow"
+				else
+					elem.status = state
+					if state == "open" then
+						elem.color = "blue"
+					else
+						elem.color = "green"
+					end
+				end
+				elem.id = door.id
+			end		
+			table.insert(data, elem)
+		end
+	end
+	return data
+end
+
+function startTimeout()
+	if not timeoutTimerSet then
+		-- log.write("Queuing noEvent event")
+		os.queueEvent("noEvent")
+		timeoutTimerSet = true
+	end
+end
+
+local timeoutTimerSet = false
+
+newCommander(23, "self", 1)
+newCommander(25, "Zack's Tablet", 0)
+newCommander(28, "Lockdown Button", 2)
+newCommander(27, "inventory Drone 2", 4)
+newCommander(35, "inventory Drone 2", 4)
+newCommander(45, "MTOS disk chest monitor", 1)
+-- newCommander(15, "Main Hangar Display (UI)", 1)
+newCommander(54, "Ben's Tablet", 1)
+
+newDoor(2, "Turtle entry/exit door", 4)
+newDoor({6, 8}, "Hangar blast doors", 4)
+newDoor(16, "Nether Portal Door", 3)
+newDoor(18, "Turtle Storage room hatch", 3)
+newDoor(19, "Turtle main room hatch", 3)
+newDoor({29, 46, 47}, "Lava window gate", 2)
+newDoor(43, "Window Blast Shutter", 2)
+newDoor(39, "Turtle front door hatch", 3)
+newDoor(44, "Drop Staircase", 1)
+newDoor(48, "MTOS Disk Bunker", 0)
+newDoor({56, 58}, "Inventory Hut door", 4)
+
+newWirelessAdapter(9, "Hangar Wireless Adapter", 1)
+
+newDisplay(10, "Turtle Status Board", 3)
+newDisplay(15, "Main Hangar Display", 2)
+
+loadTasks()
+
+table.insert(tasks, 1, "updateStatuses")
+
+--Todo: Remove tasks system, move functions into eventTimers[] system
+
+local run = true
+local checkTerminate = false		--When true, the server is expecting a password to be entered in order to shut the server down
+inp.acceptInput(false)
+comms.startup(modemSide)
+log.mirrorPrint(true)
+	
+while run == true do
+	print("Reached top of loop")
+	print(os.time())
+	if #tasks > 0 then startTimeout() end
+	-- log.write("Pulling event...")
+	event, arg1, arg2, arg3, arg4, arg5 =  os.pullEventRaw()
+	-- printEvent()
+	if event == "noEvent" then
+		--Retreive the first task from the task list, and process it
+		if #tasks > 0 then
+			local currTask = tasks[1]
+			if currTask == "updateStatuses" then
+				log.write("Updating door statuses")
+				eventTimers.updateStatuses = os.startTimer(60 * 5)				
+				for k, v in pairs(doorControllers) do
+					if type(v.id) == "number" then
+						--For single-controller doors
+						sendMessage(v.id, "getState")
+						v.lastStatus = v.status
+						v.status = "updating"
+						v.expectingResponse = true
+						eventTimers[os.startTimer(constants.responseTimeout)] = getResponseTimeoutEvent(v.id)
+					elseif type(v.id) == "table" then
+						--For multi-controller doors
+						for _k, _v in pairs(v.id) do
+							sendMessage(_v, "getState")
+						end
+						for x = 1, #v.status do
+							v.lastStatus[x] = v.status[x]
+							v.status[x] = "updating"
+							v.expectingResponse[x] = true
+							eventTimers[os.startTimer(constants.responseTimeout)] = getResponseTimeoutEvent(v.id[x])
+						end
+					end
+				end
+			end
+			deleteTask()
+		end
+	elseif event == "timer" then
+		if arg1 == eventTimers.updateStatuses then
+			addTask("updateStatuses")
+		elseif type(eventTimers[arg1]) == "table" then
+			if eventTimers[arg1].task == "responseTimeout" then
+				updateDisplay = true
+				if eventTimers[arg1].id ~= nil then
+					local class, index, comboIndex = checkDeviceID(eventTimers[arg1].id)
+					if type(devices[class]) == "table" and type(devices[class][index]) == "table" then
+						local vType = type(devices[class][index].expectingResponse)
+						if vType == "boolean" then
+							if devices[class][index].expectingResponse == true then
+								devices[class][index].lastStatus = devices[class][index].status
+								devices[class][index].status = "CONN ERROR"
+							end
+						elseif vType == "table" then
+							if devices[class][index].expectingResponse[comboIndex] == true then
+								devices[class][index].lastStatus[comboIndex] = devices[class][index].status[comboIndex]
+								devices[class][index].status[comboIndex] = "CONN ERROR"
+							end
+						end
+					end
+				end
+			end
+		else
+			log.write("Bad timer event:")
+			-- write("snek:")
+			-- printEvent(true)
+		end
+	elseif event == "terminate" then
+		term.setCursorPos(1, 15)
+		term.clearLine()
+		write("Enter password:")
+		checkTerminate = true
+		inp.acceptInput(true)
+		inp.displayUserText("*")
+		inp.setCursorPos()
+	elseif checkTerminate and event == "userInput" then
+		if arg1 == "authorized" then
+			log.write("Termination password accepted.", true)
+			run = false
+		else
+			term.clearLine()
+			log.write("Termination password rejected!!", true)
+			log.write("Console user attempted to terminate with bad password! > " .. arg1, false)
+			checkTerminate = false
+			inp.acceptInput(false)
+			term.setCursorBlink(false)
+		end
+	elseif event == "key" or event == "key_up" then
+			inp.getInputPullEvent(event, arg1)
+	elseif event == "modem_message" then
+		comms.processEvent(event, arg1, arg2, arg3, arg4, arg5)
+		log.write("event:")
+		log.write(event)
+		log.write(arg1)
+		log.write(arg2)
+		log.write(arg3)
+		log.write(arg4)
+		log.write(arg5)
+	elseif event == "comms_message" then
+		
+		local message = arg4
+		if message ~= nil then
+			arg4 = message.data
+			arg3 = message.sender			
+			local senderClass, senderIndex, comboIDIndex = checkDeviceID(arg3)
+			if senderClass ~= nil then log.write("Sender:" .. senderClass) end
+			
+			
+			if senderClass == "commanders" then
+				term.clearLine()
+				if type(arg4) == "string" then
+					if arg4 == "lockdown" then
+						for i = 1, #doorControllers do
+							door_setState(i, "lockdown", true)
+						end
+					elseif checkInput(arg4, "close:") then
+						local message = getInputMessage(arg4, "close:")
+						if message == "all" then
+							log.write("Closing all doors")
+							for i = 1, #doorControllers do
+								door_close(i)
+							end
+						else
+							local doorID = tonumber(message)
+							if doorID ~= nil then
+								--If we get "close:<num>" as the message, then we send a close request to <num>							
+								door_close(doorID)
+							else
+								log.write(mergeStrings("Bad door ID: Unable to convert ID to number", message))
+							end
+						end
+					elseif checkInput(arg4, "open:") then
+						local message = getInputMessage(arg4, "open:")
+						if message == "all" then
+							log.write("Opening all doors")
+							for i = 1, #doorControllers do
+								door_open(i)
+							end
+						else
+							local doorID = tonumber(message)
+							if doorID ~= nil then
+								--If we get "open:<num>" as the message, then we send a open request to <num>
+								door_open(doorID)
+							else
+								log.write(mergeStrings("Bad door ID: Unable to convert ID to number", message))
+							end
+						end
+					elseif checkInput(arg4, "toggleState:") then
+						log.write("Toggling door state")
+						local message = getInputMessage(arg4, "toggleState:")
+						local doorID = tonumber(message)
+						if doorID ~= nil then
+							--If we get "toggleState:<num>" as the message, then we send a toggleState request to <num>
+							door_setState(doorID, "toggleState")
+						else
+							log.write(mergeStrings("Bad door ID: Unable to convert ID to number", message))
+						end
+					elseif arg4 == "getDoors" then
+						comms.sendMessage(arg3, export_doorStatus(commanders[senderIndex].accessLevel))
+					end				
+				end
+				
+				
+			elseif senderClass == "doorControllers" then
+				if string.sub(arg4, 1, 11) == "stateReport" then
+					updateDisplay = true
+					local message = string.sub(arg4, 13)
+					if type(doorControllers[senderIndex].id) == "number" then
+						--Single door mode
+						if message == "open" or message == "closed" then
+							doorControllers[senderIndex].status = message
+							doorControllers[senderIndex].expectingResponse = false
+							log.write("stateReport from " .. senderClass .. ": " .. senderIndex .. " - " .. message)
+						else
+							log.write("Bad stateReport from " .. senderClass .. ":" .. senderIndex .. " - " .. message)
+						end
+					elseif type(doorControllers[senderIndex].id) == "table" then
+							doorControllers[senderIndex].status[comboIDIndex] = message
+							doorControllers[senderIndex].expectingResponse[comboIDIndex] = false
+						if message == "open" or message == "closed" then
+							log.write("stateReport from " .. senderClass .. ":" .. senderIndex .. ":" .. comboIDIndex .. " - " .. message)
+						else
+							log.write("Bad stateReport from " .. senderClass .. ":" .. senderIndex .. ":" .. comboIDIndex .. " - " .. message)
+						end
+					end
+				end
+				
+				
+			elseif senderClass == "displays" then
+				if arg4 == "updateReq" then
+					updateDisplay = true
+				else
+					message = {}
+					message.protocol = "comms"
+					message.encryption = "none"
+					message.data = arg4
+					message.recipient = os.getComputerID()
+					message.sender = os.getComputerID()
+					os.queueEvent("modem_message", modemSide, os.getComputerID(), os.getComputerID(), message, 0)
+
+				end
+			end
+		end
+	else
+		log.write("Unknown event:")
+		-- printEvent(true)
+	end
+		
+	if updateDisplay == true then
+		log.write("Updating door display")
+		sendMessage(15, export_doorStatus(displays[2].accessLevel))
+		updateDisplay = false
+	end
+	log.flush()
+end
+local x, y = term.getSize()
+term.setCursorPos(1, y - 1)
+comms.shutdown()
+log.write("Exiting controlServer...", true)

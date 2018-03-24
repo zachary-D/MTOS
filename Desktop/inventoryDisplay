@@ -1,0 +1,167 @@
+local version = "v1.0.0a"
+
+local modemSide = "right"
+local monitorSide = "left"
+
+comms.startup(modemSide)
+
+local run = true
+
+local inventoryServer = 59
+
+local monitor = peripheral.wrap(monitorSide)
+monitor.setTextScale(0.5)
+
+local categories = {}
+
+function trackCategories(category)
+
+	local categoryTracked = false
+	
+	for i = 1, #categories do
+		if category == categories[i] then
+			categoryTracked = true
+			break
+		end
+	end
+	
+	if categoryTracked == false then
+		categories[#categories + 1] = category
+	end
+end
+
+while run do
+	
+	local message = comms.waitForMessage(inventoryServer)
+	local display = {}
+	
+	--Parse the message into a form we can use
+	for k, v in pairs(message.data) do
+		for l, w in pairs(message.data[k].damageTypes) do
+			if string.find(k, ":") ~= nil then
+				local entry = {}
+				entry.name = k
+				if string.find(entry.name, ":") ~= nil then
+					entry.name = string.sub(entry.name, string.find(entry.name, ":") + 1)
+				end
+				
+				entry.damageValue = l
+				if w.alias ~= nil then
+					entry.name = w.alias
+				end
+				
+				if w.alias ~= nil or (v.ignoreDamage and entry.damageValue == 0) then
+					entry.damageValue = nil
+				end
+				
+				entry.category = w.category
+				
+				entry.amount = w.amount
+				if entry.amount ~= 0 and entry.amount ~= nil then
+					table.insert(display, entry)
+				end
+			end
+		end
+	end
+	
+	
+	
+	--Alphabetize the list
+	
+	--This part corrupts the damage values and item counts somehow, so it's disabled until that's fixed
+	
+	local inOrder = false
+	
+	while not inOrder do
+	
+		
+		local badOrder = false		--If any elements were out of order and had to be exchanged
+		
+		for entry = 1, #display - 1 do
+			
+			--Move an entry up the list if:
+			--The entry has a category and the one above it does not
+			--Both entries have categories, and the one above it has a 'lower' category
+			
+			if (display[entry].category == nil and display[entry + 1].category ~= nil) or (display[entry].category ~= nil and display[entry + 1].category ~= nil and string.lower(display[entry].category) > string.lower(display[entry + 1].category)) or (display[entry].category == display[entry + 1].category and string.lower(display[entry].name) > string.lower(display[entry + 1].name)) then
+				
+				local switch = display[entry + 1]
+				display[entry + 1] = display[entry]
+				display[entry] = switch
+				
+				badOrder = true
+			end
+			
+			trackCategories(display[entry].category)
+			trackCategories(display[entry + 1].category)
+			
+		end
+		
+		
+	
+		if badOrder then
+			inOrder = false
+		else
+			inOrder = true
+		end
+		
+	end
+	
+	--Display the list
+	local x, y = monitor.getSize()
+	monitor.clear()
+	
+	local numColumns = 4
+	local numRows = (#display + #categories * 2) / numColumns 
+	
+	local lastCategory
+	
+	local xPos, yPos = 1, 1
+	
+	for i = 1, #display do
+		
+		if display[i].category ~= lastCategory and lastCategory ~= "Uncategorized" then
+		
+			lastCategory = display[i].category
+			if yPos ~= 1 then
+				yPos = yPos + 1
+				if yPos > numRows then
+					xPos = xPos + 1
+					yPos = 1
+				end
+			end
+			monitor.setCursorPos(1 + (xPos-1) * x / numColumns, yPos)
+			if lastCategory == nil then
+				lastCategory = "Uncategorized"
+			end
+			
+			
+			monitor.write(lastCategory .. ":")
+			yPos = yPos + 1
+			if yPos > numRows then
+				xPos = xPos + 1
+				yPos = 1
+			end
+			
+		end
+	
+		monitor.setCursorPos(1 + (xPos-1) * x / numColumns, yPos)
+	
+		monitor.write(display[i].name)
+		if(display[i].damageValue ~= nil) then
+			monitor.write(" | ")
+			monitor.write(display[i].damageValue)
+		end
+		monitor.write(" = ")
+		monitor.write(display[i].amount)
+		
+		yPos = yPos + 1
+		if yPos > numRows then
+			xPos = xPos + 1
+			yPos = 1
+		end
+	end
+	
+end
+
+comms.shutdown()

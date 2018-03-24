@@ -1,0 +1,39 @@
+
+--RaidFormatter will be automatically launched after install, this read() helps to prevent the MTOS install disk from being mistakenly formatted 
+print("Press enter to begin formatting")
+read()
+
+while(true) do
+	
+	local e, a1, a2, a3, a4, a5 = os.pullEvent()
+	
+	if e == "disk" and a1 == "top" then
+		--If a disk is detected, format it.
+		
+		--If the item in the disk drive is a formattable item
+		if disk.hasData("top") then	
+			
+			
+			--Make sure we don't overwrite disks with data on them
+			--Finish this part later
+			
+			-- if disk.getLabel("top") ~= nil then
+				-- print("Warning: the disk already has a label - " .. disk.getLabel("top")) then
+				-- print("Are you sure you wish to continue formattin
+			
+			-- end
+			
+			disk.setLabel("top", "MTOS RAID disk - blank")
+			
+			--Wipe the disk
+			for k, v in pairs(fs.list("disk")) do
+				fs.delete("disk/" .. v)
+			end
+			
+			--Eject the disk
+			disk.eject("top")
+			
+		end
+	end
+	
+end

@@ -1,0 +1,160 @@
+local _PROGRAM_VERSION = "v2.0.0a"
+
+local args = {...}
+
+--This gets the path to the source MTOS directory on the disk (I think) I'm not exactly sure, as this comment was written long after this was coded
+local disk = string.reverse( string.sub(string.reverse(shell.getRunningProgram()), string.find(string.reverse(shell.getRunningProgram()), "/"), string.len(shell.getRunningProgram())))
+
+if args[1] == nil then
+	error("Install version not specified!")
+end
+
+local install = args[1]:lower() --The version of MTOS to install.  Either "core" for APIs and protocol only install, or a specific program (which automatically includes core)
+
+if install == "core" or (fs.exists(disk .. "Desktop/" .. install) and not fs.isDir(disk .. "Desktop/" .. install)) or (type(turtle) == "table" and fs.exists(disk .. "Turtle/" .. install) and not fs.isDir(disk .. "Turtle/" .. install)) then
+	print("Installing MTOS " .. _PROGRAM_VERSION .. " - " .. install)
+else
+	error("Install version \"" .. install .. "\" does not exist")
+end
+
+sleep(0.5)	--Pause so the user can read the output message
+
+--Create the OS file structure (Even on update, the updater runs the uninstaller)
+fs.makeDir("MTOS")
+fs.makeDir("MTOS/Core")
+fs.makeDir("MTOS/APIs")
+fs.makeDir("MTOS/Protocols")
+
+--Install core programs and APIs
+print("Copying core files")
+local files = fs.list(disk .. "Core")
+for k, v in pairs(files) do
+	if not fs.isDir(disk .. "Core/" .. v) then
+		print("Copying " .. v)
+		fs.copy(disk .. "Core/" .. v, "MTOS/Core/" .. v)
+	end
+end
+
+fs.copy(disk .. ".version", "MTOS/.version")
+
+--Install the program specified, if applicable
+if fs.exists(disk .. "Desktop/" .. install) and not fs.isDir(disk .. "Desktop/" .. install) then
+	fs.copy(disk .. "Desktop/" .. install, "MTOS/" .. install)
+elseif fs.exists(disk .. "Common/" .. install) and not fs.isDir(disk .. "Common/" .. install) then
+	fs.copy(disk .. "Common/" .. install, "MTOS/" .. install)
+elseif fs.exists(disk .."Turtle/" .. install) and not fs.isDir(disk .."Turtle/" .. install) then
+	fs.copy(disk .. "Turtle/" .. install, "MTOS/" .. install)
+end
+
+--Install common programs
+print("Copying common program")
+local files = fs.list(disk .. "Common")
+for k, v in pairs(files) do
+	if not fs.isDir(disk .. "Common/" .. v) then
+		print("Copying " .. v)
+		fs.copy(disk .. "Common/" .. v, "MTOS/" .. v)
+	end
+end
+
+if turtle == nil then
+	--Installing on desktop computers
+	
+	--Copy APIs
+	print("Copying desktop APIs")
+	local files = fs.list(disk .. "Desktop/APIs")
+	for k,v in pairs(files) do
+		print("Copying " .. v)
+		fs.copy(disk .. "Desktop/APIs/" .. v, "MTOS/APIs/" .. v)
+	end
+	
+	--Copy desktop communication protocols
+	print("Copying communication protocols")
+	local files = fs.list(disk .. "Desktop/Protocols")
+	for k, v in pairs(files) do
+		print("Copying " .. v)
+		fs.copy(disk .. "Desktop/Protocols" .. v, "MTOS/Protocols/" .. v)
+	end
+	
+elseif turtle ~= nil then
+	--Installing on turtles
+	
+	--Copy turtle APIs
+	print("Copying turtle APIs")
+	local files = fs.list(disk .. "Turtle/APIs")
+	for k,v in pairs(files) do
+		print("Copying " .. v)
+		fs.copy(disk .. "Turtle/APIs/" .. v, "MTOS/APIs/" .. v)
+	end
+	
+	--Copy turtle communication protocols
+	print("Copying communication protocols")
+	local files = fs.list(disk .. "Turtle/Protocols")
+	for k, v in pairs(files) do
+		print("Copying " .. v)
+		fs.copy(disk .. "Turtle/Protocols" .. v, "MTOS/Protocols/" .. v)
+	end
+end
+
+--Copy common APIs
+print("Copying common APIs")
+local files = fs.list(disk .. "Common/APIs")
+for k, v in pairs(files) do 
+	print("Copying " .. v)
+	fs.copy(disk .. "Common/APIs/" .. v, "MTOS/APIs/" .. v)
+end
+
+--Actually install the APIs
+print("Installing APIs")
+for k, v in pairs(fs.list("MTOS/APIs")) do		--Load each API and run install() if they have that function
+	os.loadAPI("MTOS/APIs/" .. v)
+	if _G[v].install ~= nil then
+		print("Installing " .. v)
+		_G[v].install()
+	end
+end
+
+--Copy common communication protocols
+print("Copying communication protocols")
+local files = fs.list(disk .. "Common/Protocols")
+for k, v in pairs(files) do
+	print("Copying " .. v)
+	fs.copy(disk .. "Common/Protocols/" .. v, "MTOS/Protocols/" .. v)
+end
+
+--Copy startup files
+print("Copying startup files")
+local files = fs.list(disk .. "Root")
+for k, v in pairs(files) do
+	if fs.isDir(disk .. "Root/" .. v) == false then
+		print("Copying " .. v)
+		fs.copy(disk .. "Root/" .. v, v)
+	end
+end
+
+--Create the local directory
+if fs.isDir("MTOSLocal") == false then
+	print("Creating local directory")
+	fs.makeDir("MTOSLocal")
+end
+
+--Create the autorun file
+if fs.exists("MTOSLocal/autorun") == false then
+	print("Creating autorun")
+	local file = fs.open("MTOSLocal/autorun", "w")
+	
+	--If the install version is not 'core', create the autorun for it.
+	if install ~= "core" then
+		file.write("shell.run(\"MTOS/" .. args[1] .. "\")")
+	end
+	
+	file.close()
+end
+
+--Writes the installation type to '.installType.'
+local installType = fs.open("MTOSLocal/.installType", 'w')
+installType.write(install)
+installType.close()
+
+print("Installation complete!")
+sleep(0.5)
+os.reboot()

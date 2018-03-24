@@ -1,0 +1,20 @@
+local version = "1.2.2"
+
+--Wall_v1--1-10-2016--
+os.loadAPI("inv")
+local first = true
+
+repeat
+  if first == true then
+    first = false
+  else
+    inv.getFullSlot()
+    turtle.placeDown()
+    turtle.turnRight()
+    turtle.turnRight()
+  end
+  repeat
+    inv.getFullSlot()
+    turtle.place()
+  until turtle.back() == false
+until turtle.up() == false

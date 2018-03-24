@@ -1,0 +1,1377 @@
+local version = "v1.1.0"
+
+--[[
+Todo:
+	Finish migrating transmission handling to 'comms_messsage' events, and further migrating to using functions
+
+]]--
+
+local args = {...}
+
+if type(log) ~= "table" then
+	error("Missing API: comms")
+end
+
+log.setName("inventoryServer")
+log.write("Starting version " .. version)
+
+if type(comms) ~= "table" then
+	error("Missing API: comms")
+end
+
+if type(inp) ~= "table" then
+	error("Missing API: inp")
+end
+
+if type(XML) ~= "table" then
+	error("Missing API: XML")
+end
+
+if type(utility) ~= "table" then
+	error("Missing API: utility")
+end
+
+local modemSide = "bottom"
+
+local run = true
+local checkTerminate = false		--When true, the server is expecting a password to be entered in order to shut the server down
+
+local config = {}
+
+local autoCreateNewStorage = true		--When true, the server will try to create storage addresses for items not found in the inventory database
+
+--Various variables dictating the size and placement of the storage room
+local storeroomXSize = 4
+local storeroomYSize = 7
+local storeroomZSize = 16
+local storeroomXOrigin = -60
+local storeroomYOrigin = 67
+local storeroomZOrigin = 263
+
+local inventory = {}		--The database containing the locations and amount of every item in the system
+local aliases = {}			--A list of user-friendly aliases for inventory entries
+local commanders = {}		--The list of commanders
+local intakes = {}			--The list of intake locations
+local drones = {}			--The list of drones
+local tasks = {}			--The list of tasks to be done
+
+local lastTaskUID = 0		--The last UID assigned to a task, used to ensure that multiple tasks aren't assigned the same UID
+
+local eventTimers = {} 		--Stores data for eventTimers, with the event as the key
+
+config.fileNames = {}	--A table containing the different file names used for saving data
+
+local fileLoc = "inventoryServer"
+local invFileName = "inventory"
+local taskFileName = "tasks"
+local intakeFileName = "intakes"
+local commandersFileName = "commanders"
+config.fileNames.drones = "drones"
+config.fileNames.aliases = "aliases"
+
+config.autosaveInterval = 60		--The interval at which the server saves data.  0 for no autosave.
+
+local commandServer = 23
+
+config.display = {}
+config.display.tasks = 37
+config.display.inventory = 30
+config.display.drones = 10
+
+local taskDronesEventQueued = false	--True when a taskDrones event has been created but has not been pulled yet, used to make sure the event queue isn't flooded with taskDrones events
+
+local chestDir = "south"
+
+local autosaveTrigger
+if config.autosaveInterval > 0 then
+	autosaveTrigger = os.startTimer(config.autosaveInterval)
+end
+
+function saveInventory()
+	log.write("Saving inventory")
+	XML.encodeFile(inventory, fileLoc .. "/" .. invFileName)
+	log.write("Done saving inventory")
+end
+
+function loadInventory()
+	log.write("Loading inventory")
+	inventory = XML.decodeFile(fileLoc .. "/" .. invFileName)
+	log.write("Done loading inventory")
+	if inventory == nil then
+		inventory = {}
+	end
+end
+
+function saveTasks()
+	log.write("Saving tasks")
+	XML.encodeFile(tasks, fileLoc .. "/" .. taskFileName)
+	log.write("Done saving tasks")
+	display_updateTasks()
+end
+
+function loadTasks()
+	log.write("Loading tasks")
+	tasks = XML.decodeFile(fileLoc .. "/" .. taskFileName)
+	log.write("Done loading tasks")
+	if tasks == nil then
+		tasks = {}
+	end
+	for i = 1, #tasks do
+		if tasks[i].UID > lastTaskUID then
+			lastTaskUID = tasks[i].UID
+		end
+		lastTaskUID = lastTaskUID + 1
+	end
+	display_updateTasks()
+end
+
+function saveIntakes()
+	log.write("Saving intakes")
+	XML.encodeFile(intakes, fileLoc .. "/" .. intakeFileName)
+	log.write("Done saving intakes")
+end
+
+function loadIntakes()
+	log.write("Loading intakes")
+	intakes = XML.decodeFile(fileLoc .. "/" .. intakeFileName)
+	log.write("Done loading intakes")
+	if intakes == nil then
+		intakes = {}
+	end
+end
+
+function saveCommanders()
+	log.write("Saving commanders")
+	XML.encodeFile(commanders, fileLoc .. "/" .. commandersFileName)
+	log.write("Done saving commanders")
+end
+
+function loadCommanders()
+	log.write("Loading commanders")
+	commanders = XML.decodeFile(fileLoc .. "/" .. commandersFileName)
+	log.write("Done loading commanders")
+	if commanders == nil then
+		commanders = {}
+	end
+end
+
+function saveAll(forceText)	--Saves all files.  If forceText == true, then the progress for each will be noted.
+	local oldState = log.getMirrorPrint()
+	log.mirrorPrint(true)
+	saveInventory()
+	saveTasks()
+	saveIntakes()
+	saveCommanders()
+	drone_saveAll()
+	log.mirrorPrint(oldState)
+end
+
+function loadAll()
+	loadInventory()
+	loadTasks()
+	loadIntakes()
+	loadCommanders()
+	drone_loadAll()
+end
+
+
+function registerDrone(ID)
+	local newDrone = {}
+	newDrone.UID = #drones + 1
+	newDrone.ID = ID
+	sendMessage(ID, "checkIn")
+	newDrone.status = "Awaiting checkin"
+end
+
+function taskDrone(drone)		--Tasks a drone to preform 'task'.  Tasks the drone with UID 'drone' if it is provided, otherwise it picks an idle drone at random
+	local taskUID
+	--If task is nil, then grab the first task off the top of the list
+	for i = 1, #tasks do
+		if tasks[i].inProgress == false then
+			log.write("Found a task! - " .. i)
+			taskUID = i
+			break
+		end
+	end
+	if taskUID == nil then
+		return false --We can't assign tasks that don't exist
+	end
+	log.write("Task:\n" .. textutils.serialize(tasks[taskUID]))
+	if drone ~= nil then	--If the drone used is specified, task that drone
+		log.write("Tasking drone with method A")
+		comms.sendMessage(drones[drone].id, tasks[taskUID].task)
+		drones[drone].status = "tasking job"
+		tasks[taskUID].inProgress = drones[drone].id
+	else					--Otherwise, find the first drone that is available
+		local UID = 1
+		while drones[UID] ~= nil and drones[UID].status ~= "idle" do
+			UID = UID + 1
+			-- print(UID)
+		end
+		-- print(UID)
+		if drones[UID] ~= nil then
+			log.write("Tasking drone with method B")
+			drones[UID].status = "tasking job"
+			tasks[taskUID].inProgress = drones[UID].id
+			comms.sendMessage(drones[UID].id, tasks[taskUID].task)
+			
+		else
+			log.write("No drones available for tasking")
+			queueTask(task, 10, drone)
+			return false
+		end
+	end
+	saveTasks()
+	display_updateTasks()
+	return true
+end
+
+function checkForAvailabledrones()
+	-- log.write("Number of drones: " .. #drones)
+	-- log.write(textutils.serialize(drones))
+	for i = 1, #drones do
+		-- log.write("DroneElemNum " .. i)
+		-- log.write("Drone status: " .. drones[i].status)
+		if drones[i].status == "idle" then
+			-- log.write("Found idle drone!")
+			return true
+		end
+	end
+	-- log.write("All drones busy")
+	return false
+end
+
+
+function queueTask(task, priority, drone, skipSave)		
+	return task_create(task, priority, drone, skipSave)
+end
+
+function task_create(task, priority, drone, skipSave)	--Queues the task 'task' with 'priority' for 'drone'.  If priority is nil then 5 (neutral) is assumed, if drone is nil then it is assigned to whatever drone is free.  1 is the miniumum priority, 9 is the max (There is no actual cap though).  If skipSave is true, the task is not saved to the file immediatley (good for adding tasks in bulk then saving them manually)
+	log.write("Queueing task") 
+	if priority == nil then
+		priority = 5
+	end
+	local elem = {}
+	elem.task = task
+	elem.priority = priority
+	elem.drone = drone
+	lastTaskUID = lastTaskUID + 1
+	elem.UID = lastTaskUID
+	elem.task.UID = lastTaskUID
+	elem.inProgress = false
+	--log.write("Element:\n" .. textutils.serialize(elem))
+	local pos = 1	
+	while #tasks >= pos and elem.priority <= tasks[pos].priority do		--Find the appropriate 'pos' given the priority
+		pos = pos + 1
+	end
+	table.insert(tasks, pos, elem)
+	if skipSave ~= true then
+		saveTasks()
+		display_updateTasks() 
+		createTaskDronesEvent()
+	end
+end
+
+function task_remove(UID)		--Removes the task with UID 'UID'  Note: the UID for a task is NOT the vector address of the task
+	if UID == nil then
+		return nil
+	end
+	local ID = task_findElementID(UID)
+	if ID == nil then
+		return nil
+	end
+	return task_removeElement(ID)
+end
+
+function task_findElementID(UID)		--Returns the element ID of the task 'UID'
+	for i = 1, #tasks do
+		if tasks[i].UID == UID then
+			return i
+		end
+	end
+end
+
+function task_removeElement(element)	--Removes the task at 'element' in the task vector
+	return table.remove(tasks, element)
+end
+
+function task_checkForAvailable()		--Returns true when there are tasks not assigned to drones
+	for i = 1, #tasks do
+		if tasks[i].inProgress == false then
+			return true
+		end
+	end
+	return false
+end
+
+
+function createTimerEvent(time, task)		--Creates a timer event with time 'time', and create an entry in eventTimers with the data 'task'
+	eventTimers[os.startTimer(time)] = task
+end
+
+function createResponseTimeoutEvent(ID, time)		--Creates a response timeout timer for 'ID', with 
+	local task = {}
+	task.task = "responseTimeout"
+	task.id = ID
+	createTimerEvent(time, task)
+end
+
+--[[function createStorageCheckEvent(location, time, triggerNow)		--Creates a new timer event that will trigger every 'time' seconds, to instruct the server to check for items to store in 'location'.  If 'triggerNow' == true, then the event will be triggered instantly, but will still loop every 'time' seconds
+	local event = {}
+	event.task = {["task"] = "store", ["location"] = location}
+	event.time = time
+	event.priority = 4
+	local l_time = time
+	if triggerNow == true then
+		l_time = 0
+	end
+	log.write("checkStorage event created")
+	createTimerEvent(l_time, event)
+end]]--
+
+function createTaskDronesEvent()		--Creates an event in the event queue to assign tasks to any and all available drones.  Generally used when a task has just been queued, to distributed it to otherwise idle drones
+	log.write("checking if the task drones event already exists...")
+	if taskDronesEventQueued == false then
+		log.write("Creating taskDrones event")
+		os.queueEvent("taskDrones")
+		taskDronesEventQueued = true
+	end
+end
+
+
+function drone_updateStatus(drone)		--Sends a update request to drone 'drone'.  'drone' can either be the UID of a drone (which is equal to it's key in the table) or the data in drones[UID]
+	
+	--If a UID is passed instead of the drone's table, get its table
+	if type(drone) == "number" then
+		drone = drones[drone]
+	end
+	
+	comms.sendMessage(drone.id, "updateRequest")
+end
+
+function newDrone(id)	--Registers a new drone with the server, and sends a getState request
+	local drone = {}
+	drone.id = id
+	drone.status = "updating"
+	local UID = #drones + 1
+	drone.UID = UID
+	drones[UID] = drone
+	drone_updateStatus(UID)
+	drone_saveAll()
+end
+
+function findDroneUID(id)	--Finds a drone ID from a provided CC ID
+	for k,v in pairs(drones) do
+		if v.id == id then
+			return v.UID
+		end
+	end
+	return nil
+end
+
+function drone_saveAll()
+	log.write("Saving drones")
+	XML.encodeFile(drones, fileLoc .. "/" .. config.fileNames.drones)
+	log.write("Done saving drones")
+end
+
+function drone_loadAll()
+	log.write("Loading drones")
+	drones = XML.decodeFile(fileLoc .. "/" .. config.fileNames.drones)
+	for index, drone in pairs(drones) do
+		drone_updateStatus(drone)
+		drone.position = nil
+		drone.fuelLevel = nil
+	end
+	log.write("Done loading drones")
+end
+
+
+function createInventoryEntry(name, damage, ignoreDamage)
+	if ignoreDamage == nil then
+		ignoreDamage = false
+	end
+	if damage == nil then
+		damage = 0
+	end
+	log.mirrorPrint(true)
+	log.write("Creating inventory entry for " .. textutils.serialize(name) .. " dv: " .. textutils.serialize(damage) .. " iDV: " .. textutils.serialize(ignoreDamage))
+	
+	--Generate every possible storage location, and then index through all of 'inventory' to see if that location is used
+	local foundSpot = true		--True when an unused location is found.  It is set to true, and is set to false when an address using that location is found
+	local x, y, z
+	
+	utility.resetRequeueTimer()
+	
+	-- local tempFile = fs.open("testfileZ", "w")
+	
+	for c = 0, storeroomZSize - 1 do
+		for a = 0, storeroomXSize - 1 do
+			for b = 0, storeroomYSize - 1 do
+				x = storeroomXOrigin - 2 * (2*a + c%2)
+				y = storeroomYOrigin - b - 1
+				z = storeroomZOrigin - c - 1
+				foundSpot = true
+				--Loops through every storage location of every damage value of every item to check if the location has been used
+				for name, item in pairs(inventory) do
+					for damageValue, damageType in pairs(inventory[name].damageTypes) do
+						if inventory[name].damageTypes[damageValue].storage ~= nil then
+							for fallback, sLoc in pairs(inventory[name].damageTypes[damageValue].storage) do
+								utility.requeueEvents()
+								if sLoc.x == x and sLoc.y == y and sLoc.z == z and sLoc.dir == chestDir and name ~= "empty" then
+									foundSpot = false
+									-- tempFile.write(x)
+									-- tempFile.write(";")
+									-- tempFile.write(y)
+									-- tempFile.write(";")
+									-- tempFile.write(z)
+									-- tempFile.write(";")
+									-- tempFile.write(name)
+									-- tempFile.write("|")
+									-- tempFile.write(damageValue)
+									-- tempFile.write("|")
+									-- tempFile.write(fallback)
+								end
+								if not foundSpot then break end
+							end
+						if not foundSpot then break end
+						end
+					end
+					if not foundSpot then break end
+				end
+				if foundSpot then break end
+			end
+			if foundSpot then break end
+		end
+		if foundSpot then break end
+	end
+	
+	-- tempFile.close()
+	
+	if foundSpot then
+		if inventory[name] == nil then
+			inventory[name] = {}
+			inventory[name].ignoreDamage = ignoreDamage
+		end
+		if inventory[name].damageTypes == nil then
+			inventory[name].damageTypes = {}
+		end
+		if inventory[name].damageTypes[damage] == nil then
+			inventory[name].damageTypes[damage] = {}
+			inventory[name].damageTypes[damage].amount = 0
+		end
+		if inventory[name].damageTypes[damage].storage == nil then
+			inventory[name].damageTypes[damage].storage = {}
+			inventory[name].damageTypes[damage].amount = 0
+		end
+		-- if inventory[name].damageTypes[damage].storage[1] == nil then
+			-- log.write("Creating 
+			-- inventory[name].damageTypes[damage].storage[1] = {["x"] = x, ["y"] = y, ["z"] = z, ["dir"] = dir}
+		-- else
+			local fallBack = 1
+			log.write("fB: " .. fallBack)
+			while inventory[name].damageTypes[damage].storage[fallBack] ~= nil do
+				fallBack = fallBack + 1
+			end
+			log.write("Saving inventory entry at name " .. name .. "|dmg " .. damage .. "|fB " .. fallBack)
+			inventory[name].damageTypes[damage].storage[fallBack] = {["x"] = x, ["y"] = y, ["z"] = z, ["dir"] = chestDir}
+			-- log.write("inv: " .. textutils.serialize(inventory))
+		-- end
+		saveInventory()
+		local ret = {["x"] = x, ["y"] = y, ["z"] = z, ["dir"] = chestDir}
+		log.write("entry Location:" .. textutils.serialize(ret))
+		log.mirrorPrint(false)
+		return ret
+	else
+		saveAll()
+		log.write("WARNING: Out of space to store new items!  Sending drone to first intake")
+		log.mirrorPrint(false)
+		return intake_getLocation(1)
+		-- error("Out of item storage space!!!!")
+	end
+end
+
+function inventory_createEntry(name, damage, ignoreDamage)
+	return createInventoryEntry(name, damage, ignoreDamage)
+end
+
+function inventory_getEntry(name, damageValue)
+
+	-- log.write(name)
+	-- log.write(damageValue)
+
+	--Input validation
+	if name == nil then
+		log.write("name cannot be nil!")
+		return {}
+	elseif string.find(name, "alias:") ~= nil then
+		name, damageValue = alias_getEntry(name)
+	end
+	
+	if inventory_isDamageIgnored(name) then
+		damageValue = 0
+	end
+	
+	if damageValue == nil then
+		log.write("damageValue cannot be nil!")
+		return {}
+	end
+	
+	--Makes sure inventory entries for name and damageValue exists
+	if inventory[name] == nil then
+		inventory[name] = {}
+	end
+	
+	if inventory[name].damageTypes == nil then
+		inventory[name].damageTypes = {}
+	end 
+	
+	if inventory[name].damageTypes[damageValue] == nil then
+		inventory[name].damageTypes[damageValue] = {}
+	end
+	
+	return inventory[name].damageTypes[damageValue]	
+end
+
+function getStackAddress(item, damageValue, fallBack)
+	return inventory_getStackAddress(item, damageValue, fallBack)
+end
+
+function inventory_getStackAddress(item, damageValue, fallBack)		--Returns the address {x, y, z, dir} (IN TABLE FORM) to store the item 'item' with damageValue 'damageValue' (defaults to 0).  'fallBack' is optional, and defaults to 1.  It is the fallBack index of the item, where the addresses above 1 are used when the preeceding value's chest is full
+	--Input validation
+	if item == nil then
+		saveAll()
+		error("Drone has requested nil item!")
+	elseif string.find(item, "alias:") ~= nil then
+		item, damageValue = alias_getEntry(item)
+	end
+		
+	if damageValue == nil then
+		damageValue = 0
+		log.write("damageValue == nil, defaulting to 0!")
+	elseif damageValue < 0 then
+		log.write("Damage value of " .. damageValue .. " for " .. item .. " is out of range.  Defaulting to damageValue = 0")
+		damageValue = 0
+	end
+	
+	if fallBack == nil then
+		fallBack = 1
+		log.write("fallBack == nil, defaulting to 1!")
+	elseif fallBack < 1 then
+		log.write("FallBack location of " .. fallBack .. " for " .. item .. " dV: " .. damageValue .. " is out of range.  Defaulting to fallBack = 1")
+		fallBack = 1
+	end
+	
+	--Calculates the fallback location the turtle should be using (BETA)
+	local count = inventory_getCount(item, damageValue)
+	if count > 0 then
+		-- fallBack = 1 + (count - count%3456)/3456		--3456 is the max number of items that can be stored in a chest (6 * 9 * 64)	--This part needs to be rewritten.  It doesn't work as it is, and some items don't stack up to .6
+	end	
+	
+	--If there is no entry for the item at all 
+	if inventory[item] == nil then
+		log.write("A drone has requested the stackAddress for " .. item)
+		if autoCreateNewStorage == true then
+			log.write("Creating inventory entry for the item.")
+			-- log.mirrorPrint(false)
+			return createInventoryEntry(item, damageValue)
+		else
+			log.write("Sending drone to default address.")
+			-- log.mirrorPrint(false)
+			return intake_getLocation(1)
+		end
+	end
+		
+	--Overrides the damage value if ignoreDamage is disabled for the item
+	if inventory[item].ignoreDamage == true then
+		damageValue = 0
+	end
+		
+	
+	if inventory[item].damageTypes[damageValue] == nil then		--If there is no entry for that damageValue, create an entry
+		log.write("A drone has requested the stackAddress for " .. item)
+		if autoCreateNewStorage == true then
+			log.write("Creating inventory entry for the item.")
+			-- log.mirrorPrint(false)
+			return createInventoryEntry(item, damageValue)
+		else
+			log.write("Sending drone to default address.")
+			-- log.mirrorPrint(false)
+			return intake_getLocation(1)
+		end
+	end
+	
+	if inventory[item].damageTypes[damageValue].storage == nil then
+		inventory[item].damageTypes[damageValue].storage = {}
+	end
+	
+	if inventory[item].damageTypes[damageValue].storage[fallBack] == nil then	--If the requested fallback location doesn't exist, either return a fallback value that does, or throw an error if the data is corrupt
+		if fallBack == 1 then
+			saveInventory()
+			-- log.mirrorPrint(false)
+			return createInventoryEntry(item, damageValue)
+			-- error("Inventory datastructure corrupt.  Storage location for " .. item .. " dV: " .. damageValue .. " fB: " .. fallBack .. " not existant.")
+		else
+			log.write("Fallback location of " .. fallBack .. " for " .. item .. " dV: " .. damageValue .. " is not available.  Defaulting to the fallBack position before it.")
+			-- log.mirrorPrint(false)
+			return getStackAddress(item, damageValue, fallBack - 1)
+		end
+	else	--If everything checks out and there were no issues, return the address
+		-- log.mirrorPrint(false)
+		return inventory[item].damageTypes[damageValue].storage[fallBack]
+	end
+	
+	-- log.mirrorPrint(false)
+end
+
+function markChestAvailable(x, y, z, dir)
+	return inventory_markChestAvailable(x, y, z, dir)
+end
+
+function inventory_markChestAvailable(x, y, z, dir)		--Removes the storage address associated with the chest at x, y, z, dir.  The function also accepts the arguments packaged into a table passed to x
+	local tab
+	if y == nil and type(x) == "table" then
+		tab = x
+		x = tab.x
+		y = tab.y
+		z = tab.z
+		dir = tab.dir
+	end	
+	
+	log.write("Marking inventory entry as available:" .. x .. "|" .. y .. "|" .. z .. "|" .. dir)
+	
+	local foundSpot = false
+	--Loops through every storage location of every damage value of every item to check if the location has been used
+	name, dV, fB = findInventoryEntryAtCoords(x, y, z, dir)
+	log.write("name:" .. textutils.serialize(name) .. " dV:" .. textutils.serialize(dV) .. " fB:" .. textutils.serialize(fB))
+	-- GLOBALINVNAME = inventory[name]
+	if name ~= nil then
+		if #inventory[name].damageTypes[dV].storage == 1 then
+			log.mirrorPrint(true)
+			if inventory_getEntry(name, dV).alias == nil then
+				log.write("Marking " .. name .. " | " .. dV .. " as nil")
+				inventory[name].damageTypes[dV] = nil
+				log.write("Entry made available")
+			else
+				log.write("Marking " .. name .. " | " .. dV .. "as available, but preserving alias")
+				inventory_getEntry(name, dV).storage = {}
+			end
+		else
+			log.write("Removing fB:" .. fB .. " from " .. name .. " dV:" .. dV)
+			table.remove(inventory[name].damageTypes[dV].storage, fB)
+			if #inventory[name].damageTypes == 0 and inventory[name].ignoreDamage == false then
+				log.write("Inventory entry for " .. textutils.serialize(name) .. " has no other entries and a default value for ignoreDamage, deleting entry")
+				inventory[name] = nil
+			end
+		end
+	end
+	saveInventory()
+	log.mirrorPrint(false)
+end
+
+function findInventoryEntryAtCoords(x, y, z, dir)
+	return inventory_findEntry(x, y, z, dir)
+end
+
+function inventory_findEntry(x, y, z, dir)
+	utility.resetRequeueTimer()
+	local foundSpot = false
+	for name, item in pairs(inventory) do
+		if item.damageTypes ~= nil then
+			for damageValue, damageType in pairs(item.damageTypes) do
+				if damageType.storage ~= nil then
+					for fallback, sLoc in pairs(damageType.storage) do
+						utility.requeueEvents()
+						if sLoc.x == x and sLoc.y == y and sLoc.z == z and sLoc.dir == chestDir then
+							foundSpot = true
+							return name, damageValue, fallback
+						end
+						if foundSpot then break end
+					end
+				end
+				if foundSpot then break end
+			end
+		end
+		if foundSpot then break end
+	end
+end
+
+function inventory_noteAmountChange(item, amount)
+	log.write("Noting change in item amount...")
+	if item == nil then
+		log.write("item cannot be nil!")
+		return nil
+	end
+	if item.name == nil then
+		log.write("item.name cannot be nil!")
+		return nil
+	end
+	if item.damageValue == nil then
+		if item.damage ~= nil then
+			log.write("item.damageValue == nil, but item.damage is not nil, and is substituted")
+			item.damageValue = item.damage
+		else
+			log.write("item.damageValue == nil, defaulting to 0")
+			return nil
+		end
+	end
+	if inventory[item.name] == nil then
+		log.write("Inventory entry for " .. item.name .. " does not exist!")
+		return nil
+	end
+	if inventory[item.name].ignoreDamage == true then
+		log.write("ignoreDamage is true for " .. item.name .. ", setting damageValue to 0")
+		item.damageValue = 0
+	end
+	if inventory[item.name].damageTypes == nil then
+		log.write("inventory[" .. item.name .. "].damageTypes is nil!")
+		return nil
+	end
+	if inventory[item.name].damageTypes[item.damageValue] == nil then
+		log.write("inventory[" .. item.name .. "].damageTypes[" .. item.damageValue .. "] is nil!")
+		return nil
+	end
+	
+	entry = inventory_getEntry(item.name, item.damageValue)
+	
+	if entry.amount == nil then
+		entry.amount = 0
+	end
+	
+	entry.amount = entry.amount + amount
+	display_updateInventory()
+end
+ 
+function inventory_resort(name, damageValue)
+	
+	if string.find(name, "alias") ~= nil then
+		name, damageValue = alias_getEntry(name)
+	end
+	
+	local task = {}
+	task.task = "store"
+	task.locType = "coords"
+	task.loc = inventory_getStackAddress(name, damageValue)
+	queueTask(task, 10, nil, true)
+	saveTasks()
+ end 
+ 
+function inventory_resortAll()
+	inventory = {}
+	tasks = {}
+
+	inventory["resort"] = {}
+	inventory["resort"].damageTypes = {}
+	inventory["resort"].damageTypes[0] = {}
+	inventory["resort"].damageTypes[0].storage = {}
+
+	for c = 0, storeroomZSize - 1 do
+		for a = 0, storeroomXSize - 1 do
+			for b = 0, storeroomYSize - 1 do
+				x = storeroomXOrigin - 2 * (2*a + c%2)
+				y = storeroomYOrigin - b - 1
+				z = storeroomZOrigin - c - 1
+				table.insert(inventory["resort"].damageTypes[0].storage, packLocation(x, y, z, chestDir))
+				local task = {}
+				task.task = "store"
+				task.locType = "coords"
+				task.loc = packLocation(x, y, z, chestDir)
+				queueTask(task, 10, nil, true)
+			end
+		end
+	end
+	saveTasks()
+	saveInventory()
+end
+
+function inventory_getCount(name, damageValue)	--returns the amount of the item.  If damageValue == nil then 0 is assumed.
+	
+	if damageValue == nil then
+		damageValue = 0
+	end
+	
+	local amount = inventory_getEntry(name, damageValue).amount
+	
+	if amount == nil then
+		amount = 0
+	end
+	
+	return amount
+end
+
+function inventory_isDamageIgnored(name)	--Returns whether or not the item in 'name' ignores damage values when being stored or not
+
+	--Input validation
+	if string.find(name, "alias:") ~= nil then
+		name = alias_getEntry(name)
+	end
+
+	if inventory[name] == nil then 
+		return false
+	end
+	
+	return inventory[name].ignoreDamage
+end
+
+function inventory_setDamageIgnored(name, state)		--Sets whether or not the item 'name' ignores damage values when being stored or not
+	--Input validation
+	if state ~= true and state ~= false then
+		log.write("Unable to set damage ignore state - bad state!")
+		return false
+	end
+	
+	if string.find(name, "alias:") ~= nil then
+		name = alias_getEntry(name)
+	end
+
+	if inventory[name] == nil then 
+		inventory[name] = {}
+	end
+	
+	if state == true then
+		for damageValue, trashVal in pairs(inventory[name].damageTypes) do
+			-- print(damagevalue)
+			if type(damageValue) == "number" and damageValue ~= 0 then
+				inventory_resort(name, damageValue)
+				-- print("resorting..." .. damageValue)
+			end
+		end
+	end
+	
+	inventory[name].ignoreDamage = state
+	
+	return true
+end
+
+function inventory_setCategory(name, damageValue, category)
+	inventory_getEntry(name, damageValue).category = category
+end
+
+function inventory_getCategory(name, damageValue)
+	return inventory_getEntry(name, damageValue).category
+end
+
+function inventory_renameCategory(old, new)
+	
+	for name, item in pairs(inventory) do
+		if item.damageTypes ~= nil then
+			for damageValue, damageType in pairs(item.damageTypes) do
+				if damageType.category == old then
+					inventory[name].damageTypes[damageValue].category = new
+				end
+			end
+		end
+	end
+end
+
+
+function alias_getAlias(name, damageValue)	--Returns the alias for a given item
+	return inventory_getEntry(name, damageValue).alias
+end
+
+function alias_getEntry(alias)		--Returns the name and damageValue for a given alias_getAlias.  Return format: (string) name, (num) damageValue
+
+	alias = string.lower(alias)
+
+	--input validation and 'cleaning'
+	if string.find(alias, "alias:") ~= nil then
+		alias = string.sub(alias, string.find(alias, "alias:") + string.len("alias:"), string.len(alias))
+		-- print(alias)
+	end
+	
+	--Loop over each name in the inventory
+	
+	for name, name_entry in pairs(inventory) do
+		
+		for damageValue, damageValue_entry in pairs(inventory[name].damageTypes) do
+			
+			local inv_alias = inventory_getEntry(name, damageValue).alias
+			
+			if inv_alias ~= nil and string.lower(inv_alias) == alias then
+				print(alias)
+				print(name)
+				print(damageValue)
+				return name, damageValue
+			end
+			
+		end
+	end
+	return "notAnAlias", 0
+end
+
+function alias_new(name, damageValue, alias)	--Creates a new alias
+	log.write("Creating new alias")
+	
+	--Input validation
+	if name == nil then
+		log.write("Unable to create alias: cannot have nil name")
+		return false
+	end
+	
+	if alias == nil then
+		log.write("Unable to create alias: cannot have nil alias")
+		return false
+	end
+	
+	if inventory_isDamageIgnored(name) then
+		damageValue = 0
+	end
+	
+	if damageValue == nil then
+		log.write("Unable to create alias: cannot have nil damageValue")
+		return false
+	end
+	
+	inventory_getEntry(name, damageValue).alias = alias
+	saveInventory()
+	return true
+end
+
+
+function findSenderType(id)
+	if findDroneUID(id) ~= nil then
+		return "drone"
+	elseif findCommanderUID(id) ~= nil then
+		return "commander"
+	else
+		return "unclassified"
+	end
+end
+
+
+function newCommander(id)
+	local cmdr = {}
+	cmdr.id = id
+	cmdr.UID = #commanders + 1
+	table.insert(commanders, cmdr)
+end
+
+function findCommanderUID(id)
+	for i = 1, #commanders do
+		if id == commanders[i].id then
+			return i
+		end
+	end
+end
+
+
+function intake_new(name, pos, pickupInterval)
+	if pickupInterval == nil then	--If pickupInterval hasn't been set, default it to 5 mins
+		pickupInterval = 60 * 5
+	end
+	local intake = {}
+	intake.pos = pos
+	intake.name = name
+	intake.pickupInterval = pickupInterval
+	intake.UID = #intakes + 1
+	table.insert(intakes, intake)
+	-- createStorageCheckEvent(intake.UID, pickupInterval, true)
+end
+
+function intake_findUID(name)
+	for i = 1, #intakes do
+		-- write(intakes[i].name)
+		-- write("|")
+		-- print(name)
+		if intakes[i].name == name then
+			return i
+		end
+	end	
+end
+
+function intake_getLocation(intake)	--Returns the location of the intake 'intake'
+	-- print(intake)
+	-- sleep(5)
+	local UID
+	if type(intake) == "string" then
+		UID = intake_findUID(intake)
+	elseif type(intake) == "number" then
+		UID = intake
+	else
+		return nil
+	end
+	if UID == nil then
+		log.write("UID is nil!")
+		return nil
+	else
+		return intakes[UID].pos
+	end
+end
+
+
+function display_updateTasks()		--Updates the tasks display
+	log.write("Updating task display")
+	-- log.write("Number of tasks:" .. #tasks)
+	comms.sendMessage(config.display.tasks, tasks)
+end
+
+function display_updateInventory()		--Updates the inventory display
+	comms.sendMessage(config.display.inventory, inventory)
+end
+
+function display_updateDrones()			--Updates the drones display
+	comms.sendMessage(config.display.drones, drones)
+end
+
+function packLocation(x, y, z, dir)		--Packs the cordinates x, y, z, dir into a table
+	return {["x"] = x, ["y"] = y, ["z"] = z, ["dir"] = dir}
+end
+
+function registerWarning(warning)	--Writes an warning to the log, notifies the central server that an warning has occured
+	log.write("Warning:" .. warning, true)
+	local message = {}
+	message.type = "programWarning"
+	message.warning = warning
+	comms.sendMessage(commandServer, message)
+end
+
+comms.startup(modemSide)
+
+inp.acceptInput(false)
+
+loadAll()
+
+--Runtime argument handling
+if #args > 0 then
+
+	if args[1] == "resort" then					--Queues a full inventory resort, erasing the inventory
+		inventory_resortAll()
+		print("Master resort queued!")
+		
+	elseif args[1] == "exportInventory" then	--exports the inventory table to the global table
+		print("Exporting inventory...")
+		_G.inventory = inventory
+	elseif args[1] == "getCount" then			--Returns the amount of a given item in the database
+		
+		local name = args[2]
+		local dV = tonumber(args[3])
+		
+		if string.find(name, ":") == nil then
+			name = "minecraft:" .. name
+		end
+		
+		if dV == nil then
+			dV = 0
+		end
+		
+		write("Item count:")
+		print(inventory_getCount(name, dV))
+		
+	elseif args[1] == "newCommander" then		--Registers a new commander
+		
+		local ID = tonumber(args[2])
+		
+		if ID ~= nil then
+			newCommander(ID)
+			write("New commander registered:")
+			print(ID)
+			saveCommanders()
+			
+		else
+			print("Invalid ID!")
+			
+		end
+		
+	elseif args[1] == "newAlias" then			--Creates a new alias
+		
+		local name = args[2]
+		local damageValue = tonumber(args[3])
+		local alias = args[4]
+		
+		if name == nil then
+			error("name cannot be nil!")
+		end
+		
+		if inventory_isDamageIgnored(name) then
+			damageValue = 0
+		end
+		
+		if damageValue == nil then
+			error("damageValue cannot be nil!")
+		end
+		
+		if alias == nil then
+			error("alias cannot be nil!")
+		end
+		
+		alias_new(name, damageValue, alias)
+		print("New alias created!")
+	end
+	
+	run = false
+end
+
+log.write("Server online", true)
+
+--General server operation
+while run == true do
+	display_updateTasks()
+	display_updateInventory()
+	display_updateDrones()
+	log.write("Pulling event...")
+	local event, p1, p2, p3, p4, p5 = os.pullEventRaw()
+	log.write("Event type:" .. event)
+	if event == "timer" then
+		local eventTimer = eventTimers[p1]
+		if eventTimer ~= nil then
+			queueTask(eventTimer.eventTimer, task.priority)
+			-- createStorageCheckEvent(eventTimer.task.loc, eventTimer.time)
+		elseif autosaveTrigger == p1 then
+			log.write("\nBeginning autosave...", true)
+			saveAll(true)
+			autosaveTrigger = os.startTimer(config.autosaveInterval)
+			log.write("Done!", true)
+		end		
+		eventTimers[p1] = nil
+		
+	elseif event == "terminate" then
+		write("\nPassword:")
+		inp.displayUserText("*")
+		checkTerminate = true
+		inp.acceptInput(true)
+		log.write("Terminate event recieved!")
+		
+	elseif event == "key" or event == "key_up" then
+		inp.getInputPullEvent(event, p1)
+		
+	elseif event == "modem_message" then
+		
+		local message = comms.getMessage(p4)
+		comms.processEvent(event, p1, p2, p3, p4, p5)
+		
+		if message ~= nil then		--Because comms.getMessage returns nil when the message wasn't for us
+			log.write("Got message")
+			local senderType = findSenderType(message.sender)
+			
+			if senderType == "drone" then		--If the message is from a drone
+				log.write("Message from drone!")			
+				if type(message.data) == "table" then
+					-- log.write("Table received")
+					log.write(textutils.serialize(message.data))
+					
+					if message.data.type == "request" then		--FIX THIS PART TO USE FUNCTIONS + NIL CHECKING
+				
+						if message.data.request == "stackAddress" then
+							local damage = message.data.item.damageValue
+							if damage == nil then
+								damage = message.data.item.damage
+							end
+							-- log.write(textutils.serialize(message.data.item), true)
+							comms.sendMessage(message.sender, getStackAddress(message.data.item.name, damage, message.data.item.fallBack))
+							log.write("Stack address sent.")
+							
+						elseif message.data.request == "intakeAddress" then
+							comms.sendMessage(message.sender, intake_getLocation(message.data.intake))
+						end
+						
+					elseif message.data.type == "notification" then
+					
+						if message.data.notification == "itemDeposit" then
+							log.write("Noting item deposit: " .. message.data.item.name .. " - " .. message.data.amount)
+							inventory_noteAmountChange(message.data.item, message.data.amount)
+							
+						elseif message.data.notification == "itemPickup" then
+							log.write("Noting item withdrawl: " .. message.data.item.name .. " - " .. message.data.amount)
+							inventory_noteAmountChange(message.data.item, -1*message.data.amount)
+							
+						elseif message.data.notification == "chestFull" then
+							createInventoryEntry(message.data.item.name, message.data.item.damage)
+							
+						elseif message.data.notification == "chestEmptied" then
+							log.write("Deleting entry....")
+							markChestAvailable(message.data.chest)
+							
+						elseif message.data.notification == "taskComplete" then
+							log.write("A task has been completed by drone " .. findDroneUID(message.sender))
+							log.write("rmResult=" .. textutils.serialize(task_remove(message.data.taskUID)))
+							display_updateTasks()
+							createTaskDronesEvent()
+						else
+							log.write("Unknown notification:" .. message.data.notification)
+						end
+						
+					elseif message.data.type == "statusUpdate" then
+						local drone = findDroneUID(message.sender)
+						if drone == nil then
+							log.write("Warning: drone status update from unknown drone - " .. message.sender)
+						else
+							log.write("Status update from drone: " .. drone)
+							if message.data.status ~= nil then
+								drones[drone].status = message.data.status
+							else
+								log.write("Warning: drone status not specified in status update")
+								drones[drone].status = "unknown"
+							end
+							
+							if drones[drone].status == "idle" then
+								--Check to see if a drone has already been assigned a task in progress (before a restart or smt)
+								log.write("Drone is idle!")
+								for i = 1, #tasks do
+									if tasks[i].inProgress == message.sender then
+										--If the drone idling was assigned a task, put that task back up for grabs
+										log.write("This drone was already given a task, freeing that task up for other drones.")
+										tasks[i].inProgress = false
+										break
+									end
+								end
+								local UID = findDroneUID(message.sender)
+								if UID ~= nil then
+									log.write("Attempting to give the drone a job...")
+									if not taskDrone(UID) then
+										log.write("Telling drone to idle")
+										comms.sendMessage(message.sender, "idle")
+										drones[UID].status = "idle"
+									end
+								end
+							end
+							
+							if message.data.pos ~= nil then
+								drones[drone].position = message.data.pos
+							else
+								log.write("Warning: drone position not specified in status update")
+							end
+							if message.data.fuel ~= nil then
+								drones[drone].fuelLevel = message.data.fuel
+							else
+								log.write("Warning: drone fuel level not specified in status update")
+							end
+						end
+					end
+				else
+					registerWarning("Expected data as table from drone, got " .. message.data)
+				end
+				
+			elseif senderType == "commander" then
+				local UID = findCommanderUID(message.sender)
+				log.write("Message from commander " ..  textutils.serialize(message))
+				
+				if message.data.type == "command" then
+					log.write("A commander is making a command!")
+					if message.data.command == "store" then
+						log.write("Message from commander to store items")
+						local task = {}
+						task.task = "store"
+						task.locType = message.data.locType
+						task.loc = message.data.loc
+						queueTask(task, message.data.priority)
+					
+					elseif message.data.command == "retrieve" then
+						log.write("Message from commander to retrieve items")
+						local task = {}
+						task.task = "retrieve"
+						task.item = message.data.item
+						if string.find(task.item.name, "alias:") ~= nil then
+							local name, dV = alias_getEntry(task.item.name)
+							task.item.name = name
+							task.item.damageValue = dV
+						end
+						task.amount = message.data.amount
+						if task.amount > 0 then
+							queueTask(task, message.data.priority)
+						end
+						
+					elseif message.data.command == "getInventory" then
+						log.write("A commander has requested the inventory")
+						comms.sendMessage(message.sender, inventory)
+						
+					elseif message.data.command == "getTasks" then
+						log.write("A commander has requested the tasks list")
+						comms.sendMessage(message.sender, tasks)
+						
+					elseif message.data.command == "resort" then
+						if message.data.target == "all" then
+							log.write("A commander has requested a full resort!")
+							inventory_resortAll()
+						end
+					end
+				end
+			end
+		end	
+	
+	elseif event == "comms_message" then
+		local sender = p2
+		local message = p4.data
+		
+		local senderType = findSenderType(sender)
+		
+		if senderType == "commander" then
+			local UID = findCommanderUID(sender)
+			log.write("Message from commander " .. UID)
+			if message.type == "command" then
+				if message.command == "newAlias" then
+					log.write("Commander " .. UID .. " is creating a new alias!")
+					alias_new(message.name, message.damageValue, message.alias)
+				
+				elseif message.command == "setIgnoreDamage" then
+					log.write("Commander " .. UID .. " is setting a ignoreDamage state!", true)
+					inventory_setDamageIgnored(message.name, message.state)
+					
+				elseif message.command == "setCategory" then
+					log.write("Commander " .. UID .. " is setting an item cateory!", true)
+					inventory_setCategory(message.name, message.damageValue, message.category)
+					
+				elseif message.command == "renameCategory" then
+					log.write("Commander " .. UID .. " is renaming a category!")
+					inventory_renameCategory(message.currentCategory, message.newCategory)
+					
+				else
+					local mcommand = message.command
+					if mcommand == nil then
+						mcommand = "nil"
+					end
+					log.write("Invalid command:" .. mcommand)
+				
+				end
+				
+			else
+				local mtype = message.type
+				if mtype == nil then
+					mtype = "nil"
+				end
+				log.write("Invalid message type:" .. mtype)
+				
+			end
+			
+		end
+		
+	elseif event == "userInput" then
+		if checkTerminate then
+			if p1 == "authorized" then
+				log.write("Terminate password accepted.", true)
+				run = false
+			else
+				log.write("Terminate password rejected!", true)
+				log.write("Password used:" .. p1, false)
+				inp.acceptInput(false)
+				checkTerminate = false
+				term.setCursorBlink(false)
+			end
+		end
+		
+		
+	elseif event == "taskDrones" then
+		taskDronesEventQueued = false
+		log.write("Task drone event received", true)
+		log.write("Number of queued tasks: " .. #tasks)
+		utility.resetRequeueTimer()
+		log.write("Available tasks: " .. textutils.serialize(task_checkForAvailable()))
+		log.write("Available drones: " .. textutils.serialize(checkForAvailabledrones()))
+		while task_checkForAvailable() and checkForAvailabledrones() do
+			log.write("Tasking drones")
+			taskDrone()
+			log.write("Available tasks: " .. textutils.serialize(task_checkForAvailable()))
+			log.write("Available drones: " .. textutils.serialize(checkForAvailabledrones()))
+			utility.requeueEvents()
+		end
+		for i = 1, #drones do
+			if drones[i].status == "idle" then
+				comms.sendMessage(drones[i].id, "idle")
+			end
+		end
+		display_updateTasks()
+	end
+end
+
+log.write("Shutting down", true)
+saveAll()
+comms.shutdown()

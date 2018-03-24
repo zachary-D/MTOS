@@ -1,0 +1,59 @@
+local version = "1.2.3"
+
+local wiredSide = "left"
+local wirelessSide = "right"
+
+local communicationChannels = {65533, 40}
+
+wired = peripheral.wrap(wiredSide)
+wireless = peripheral.wrap(wirelessSide)
+
+for i = 1, #communicationChannels do
+	wired.open(communicationChannels[i])
+	wireless.open(communicationChannels[i])
+end
+
+local run = bool
+run = true
+
+while run == true do
+	local event, p1, p2, p3, p4, p5 = os.pullEvent()
+	-- print(textutils.serialize(p4))
+	if event == "key" then
+		run = false
+	elseif event == "modem_message" then
+		if p4.nRecipient == 9 then
+			if p4.message == "quit" then
+				run = false
+			elseif p4.message == "reboot" then
+				os.reboot()
+			end
+		else
+			--Identifies the modem to transmit over
+			local transmitModem
+			if p1 == wiredSide then
+				transmitModem = wireless
+			elseif p1 == wirelessSide then
+				transmitModem = wired
+			end
+			--Determines the channel to transmit on and the message to be transmitted
+			local transmitChannel
+			local message
+			if p2 == 65533 then
+				transmitChannel = p4.nRecipient
+				message = p4.message
+			elseif p2 == 40 then
+				transmitChannel = 40
+				message = p4
+			end
+			--Transmits the data
+			
+			-- transmitModem.transmit(transmitChannel, p3, message)
+			-- transmitModem.transmit(message.recipient, 0, message)
+			
+			wired.transmit(message.recipient, 0, message)
+			wireless.transmit(message.recipient, 0, message)
+			
+		end
+	end
+end

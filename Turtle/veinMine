@@ -1,0 +1,413 @@
+local version = "v1.0.0"
+
+local target = {}
+local initialPos = {}
+
+local environment = {}
+
+local previousLocs = {}
+
+local highX, lowX, highY, lowY, highZ, lowZ
+
+log.setName("veinMine")
+log.write("\n\n\n\nDrone online!")
+log.mirrorPrint(true)
+
+function newEntry(x, y, z, block)
+	log.write("newEntry()")
+	log.write(x .. ":" .. y .. ":" .. z .. ":" .. textutils.serialize(block))
+	--Translates the data in 'block' into data stored in the environment table
+	if block == false then
+		entry = "empty"
+	elseif isTarget(block) then
+		entry = "target"
+	else
+		entry = "filled"
+	end
+	
+	--Makes sure that the entry can be indexed to
+	if environment[x] == nil then
+		environment[x] = {}
+	end
+	if environment[x][y] == nil then
+		environment[x][y] = {}
+	end
+	
+	--Creates the entry
+	environment[x][y][z] = entry
+	
+	--Updates the highX, lowX, ... lowZ counters
+	if highX == nil then
+		highX = x
+		lowX = x
+		highY = y
+		lowY = y
+		highZ = z
+		lowZ = z
+	else
+		if highX < x then
+			highX = x
+		end
+		if lowX > x then
+			lowX = x
+		end
+		if highY < y then
+			highY = y
+		end
+		if lowY > y then
+			lowY = y
+		end
+		if highZ < z then
+			highZ = z
+		end
+		if lowZ > z then
+			lowZ = z
+		end
+	end
+end
+
+function inspectAround()
+	log.write("inspectAround()")
+	for i = 1, 4 do
+		inspectBlock_fow()
+		turtle.turnLeft()
+	end
+	local canDet, block = turtle.inspectUp()
+	newEntry(mv.getX(), mv.getY() + 1, mv.getZ(), block)
+	local canDet, block = turtle.inspectDown()
+	newEntry(mv.getX(), mv.getY() - 1, mv.getZ(), block)
+end
+
+function inspectBlock_fow()
+	log.write("inspectBlock_fow()")
+	local xOffset = 0
+	local zOffset = 0
+	if mv.getDir() == "north" then
+		zOffset = -1
+	elseif mv.getDir() == "east" then
+		xOffset = 1
+	elseif mv.getDir() == "south" then
+		zOffset = 1
+	elseif mv.getDir() == "west" then
+		xOffset = -1
+	else
+		error("Invalid direction:" .. mv.getDir())
+	end
+	local canDet, block = turtle.inspect()	--canDet is a throwaway variable
+	newEntry(xOffset + mv.getX(), mv.getY(), zOffset + mv.getZ(), block)
+end
+
+function isTarget(block)
+	log.write("isTarget()")
+	log.write("Block:" .. textutils.serialize(block))
+	return block.name == target.name and (block.damageValue == target.damageValue or block.metadata == target.damageValue)
+end
+
+function areTargets()	--Returns true when targets are present in 'environment'
+	log.write("areTargets()")
+	for x, _y in pairs(environment) do
+		for y, _z in pairs(_y) do
+			for z, block in pairs(_z) do
+				if isTarget(block) then
+					return true
+				end
+			end
+		end
+	end
+end
+
+function dirToNum(dir)		--Converts the direction 'dir' to a numerical value
+	log.write("dirToNum()")
+	if dir == "north" then
+		return 0
+	elseif dir == "east" then
+		return 1
+	elseif dir == "south" then
+		return 2
+	elseif dir == "west" then
+		return 3
+	end
+end
+
+function numToDir(num)		--Converts the direction 'num' from numerical to compass form
+	log.write("numToDir()")
+	local val = num%4
+	if val == 0 then
+		return "north"
+	elseif val == 1 then
+		return "east"
+	elseif val == 2 then
+		return "south"
+	elseif val == 3 then
+		return "west"
+	end
+end
+
+function dirOffset(dir, offset)		--Combines the directions in first and second to produce a resultant
+	log.write("dirOffset()")
+	return numToDir(dirToNum(first) + offset)
+end
+
+function isAirAt(x, y, z)
+	log.write("isAirAt()")
+	if environment[x] == nil or environment[x][y] == nil or environment[x][y][z] == nil then
+		return false
+	elseif environment[x][y][z] == "empty" then
+		return true
+	else
+		return false
+	end
+end
+
+function isTargetAt(x, y, z)
+	log.write("isTargetAt()")
+	log.write(x .. ":" .. y .. ":" .. z)
+	if environment[x] == nil or environment[x][y] == nil or environment[x][y][z] == nil then
+		return false
+	elseif environment[x][y][z] == "target" then
+		return true
+	else
+		return false
+	end
+end
+
+function isTargetAhead(dirOffset, xOffset, yOffset, zOffset)		--Returns if there is a target ahead of the turtle.  all arguments are optional
+	log.write("isTargetAhead()")
+	local _xOffset = 0
+	local _zOffset = 0
+	local dir = dirOffset(mv.getDir(), dirOffset)
+	if dir == "north" then
+		_zOffset = -1
+	elseif dir == "east" then
+		_xOffset = 1
+	elseif dir == "south" then
+		_zOffset = 1
+	elseif dir == "west" then
+		_xOffset = -1
+	else
+		error("Invalid direction:" .. mv.getDir())
+	end
+	return isTargetAt(mv.getX() + xOffset + _xOffset, mv.getY() + yOffset, mv.getZ() + zOffset + _zOffset)
+end
+
+function packLocation(x, y, z, dir)
+	return {["x"] = x, ["y"] = y, ["z"] = z, ["dir"] = dir}
+end
+
+function logMovedTo(x, y, z)		--Notes that the turtle has moved to x, y, z in the previousLocs table
+	log.write("logMovedTo()")
+	if previousLocs[x] == nil then
+		previousLocs[x] = {}
+	end
+	if previousLocs[x][y] == nil then
+		previousLocs[x][y] = {}
+	end
+	previousLocs[x][y][z] = true
+end
+
+function haveMovedToPrev(x, y, z)	--Returns true if the drone has already moved to the coordinates x, y, z
+	log.write("haveMovedToPrev()")
+	if previousLocs[x] == nil or previousLocs[x][y] == nil or previousLocs[x][y][z] == nil then
+		return false
+	else
+		return previousLocs[x][y][z]
+	end
+end
+
+function canMoveTo(x, y, z)		--Returns true when the block at x, y, z is air and has not been visited previously
+	log.write("canMoveTo()")
+	return isAirAt(x, y, z)	and not haveMovedToPrev(x, y, z)
+end
+
+function canMove(x, y, z)		--Reurns true when the turtle has not visited and can move into at minimum one block directly neighboring x, y, z
+	log.write("canMove()")
+	return canMoveTo(x + 1, y, z) or canMoveTo(x, y, z + 1) or canMoveTo(x - 1, y, z) or canMoveTo(x, y, z - 1) or canMoveTo(x, y + 1, z) or canMoveTo(x, y - 1, z)
+end
+
+function pathTo(x, y, z)	--Calculates a path to x, y, z from the drone's current location
+	log.write("pathTo()")
+	previousLocs = {}
+	local path = {}
+	table.insert(path, packLocation(x, y, z))
+	local currX = path[#path].x
+	local currY = path[#path].y
+	local currZ = path[#path].z
+	local lastDir = "x"	--The last direction the turtle moved in the path
+	local negateCoef = 1	--Set to -1 if the drone needs to travel on an axis away from the target point (if the drone can't move towards it anymore due to collisions)
+	while currX ~= x or currY ~= y or currZ ~= z do
+		local xLen = math.abs(currX - x)
+		local yLen = math.abs(currY - y)
+		local zLen = math.abs(currZ - z)
+		
+		--NOTE: Make a method to avoid going down paths we've already gone down
+		if canMove(currX, currY, currZ) then
+		
+			--Identify the directions along the axis the drone must move to reach the target
+			local xTowards, yTowards, zTowards 	--The direction towards the target location in each axis (represented by a +1 or -1, or 0 if the dorone is at the correct pos
+			if currX > x then
+				xTowards = "+1"
+			elseif currX < x then
+				xTowards = "-1"
+			end
+			if currY > y then
+				yTowards = "+1"
+			elseif currY < y then
+				yTowards = "-1"
+			end
+			if currZ > z then
+				zTowards = "+1"
+			elseif currZ < z then
+				zTowards = "-1"
+			end
+			
+			--The drone will attempt to path a route along the x axis along the coordinate, then the z if not possible, then the y if not possible,
+			--and finally away from the target in the same order if it cannot proceed in the direction of the target.  Resets every time a new node is set.
+			if lastDir == "x" then
+				if canMoveTo(currX + negateCoef * xTowards, currY, currZ) then
+					table.insert(path, packLocation(currX + negateCoef * xTowards, currY, currZ))
+					negateCoef = 1
+				else 
+					lastDir = "z"
+				end
+			elseif lastDir == "z" then
+				if canMoveTo(currX, currY, currZ + negateCoef * zTowards) then
+					table.insert(path, packLocation(currX, currY, currZ + negateCoef * zTowards))
+					lastDir = "x"
+					negateCoef = 1
+				else
+					lastDir = "y"
+				end
+			elseif lastDir == "y" then
+				if canMoveTo(currX, currY + negateCoef * yTowards, currZ) then
+					table.insert(path, packLocation(currX, currY + negateCoef * yTowards, currZ))
+					lastDir = "x"
+					negateCoef = 1
+				else
+					lastDir = "x"
+					if negateCoef == 1 then
+						negateCoef = -1
+					elseif negateCoef == -1 then
+						if #path == 0 then
+							return false
+						else
+							table.remove(path)
+						end
+					end					
+				end
+			end
+		end
+		currX = path[#path].x
+		currY = path[#path].y
+		currZ = path[#path].z
+		logMovedTo(currX, currY, currZ)
+	end
+	previousLocs = {}
+	return path
+end
+
+function findPathToTarget()
+	log.write("findPathToTarget()")
+	previousLocs = {}
+	for y = highY - mv.getY(), lowY - mv.getY() do
+		for x = lowX - mv.getX(), highX - mv.getX() do
+			for z = lowZ - mv.getZ(), highZ - mv.getZ() do
+				if isTargetAt(x, y, z) then
+					--If there is a target at that location, find a space adjacent to it to navigate to (if possible)
+					local xOffset = 0
+					local yOffset = 0
+					local zOffset = 0
+					local failed = false
+					if canMoveTo(x + 1, y, z) then
+						dir = "east"
+						xOffset = 1
+					elseif canMoveTo(x, y, z + 1) then
+						dir = "south"
+						zOffset = 1
+					elseif canMoveTo(x - 1, y, z) then
+						dir = "west"
+						xOffset = -1
+					elseif canMoveTo(x, y, z - 1) then
+						dir = "north"
+						zOffset = -1
+					elseif canMoveTo(x, y + 1, z) then
+						dir = "up"
+						yOffset = 1
+					elseif canMoveTo(x, y - 1, z) then
+						dir = "down"
+						yOffset = -1
+					else
+						failed = true
+					end
+					if failed == false then
+						local path = pathTo(x, y, z)
+						if path == false then
+							log.write("Path to not found, looping")
+						elseif type(path) == "table" then
+							return path, dir
+						end
+					end
+				end
+			end		
+		end
+	end
+	return false
+end
+
+function moveByPath(path)
+	log.write("moveByPath()")
+	for i = 1, #path do
+		moveToPosition(path)
+	end
+end
+
+function moveToPosition(pos)
+	log.write("moveToPosition")
+	mv.move(pos.x, pos.y, pos.z)
+end
+
+function mineTarget()
+	log.write("mineTarget")
+	local pathToTarget, dir = findPathToTarget()
+	if pathToTarget == false then	
+		log.write("Mining complete!")
+	elseif type(pathToTarget) == "table" then
+		moveByPath(pathToTarget)
+		if dir ~= "up" and dir ~= "down" then
+			mv.face(dir)
+			turtle.dig()
+			turtle.forward()
+			inspectAround()
+		elseif dir == "up" then
+			turtle.digUp()
+			turtle.up()
+			inspectAround()
+		elseif dir == "down" then
+			turtle.digDown()
+			turtle.down()
+			inspectAround()			
+		end
+	end
+end
+
+if mv.getX() == nil then
+	error("Position unknown!")
+else
+	local canDet
+	canDet, target = turtle.inspect()
+	target.damageValue = target.metadata
+	
+	initialPos = mv.getPos()
+
+	print("Target:")
+	print("name:" .. target.name)
+	write("DmgVal:")
+	print(target.damageValue)
+
+	write("Is this the intended target? (y/n) >")
+	if read() == "y" then
+		inspectAround()
+		while areTargets() do
+			mineTarget()
+		end
+	end
+end
